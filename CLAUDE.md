@@ -8,7 +8,10 @@ channel, uncompressed ALAC over encrypted RTP, NTP timing.
 
 `README.md` is the cold start. `docs/protocol.md` is the wire recipe; read it
 before touching `src-tauri/src/airplay/` or `crypto/`. `docs/architecture.md`
-describes what exists. `PLAN.md` holds only what is *not* built.
+describes what exists. `PLAN.md` holds only what is *not* built, and
+`docs/roadmap.md` holds the one big item: audio routing (the WASAPI tap
+today vs. a from-scratch virtual output driver, which he also wants for a
+Discord-bot project).
 
 ## Never
 
@@ -18,14 +21,24 @@ describes what exists. `PLAN.md` holds only what is *not* built.
 - **Never add headers to the event-channel 200.** `Server` and `CSeq` only.
   `Content-Length: 0` or `Audio-Latency` corrupt the receiver's realtime
   timeline. Same for the control channel's replies to receiver requests.
+- **Never let the session SETUP go out before the timing responder is
+  listening.** The HomePod sends NTP timing requests to our UDP port and
+  waits for the replies before it answers SETUP. That, and Windows Firewall
+  dropping the same UDP, are the two ways "pairs fine, SETUP times out"
+  happens. `session.rs` spawns the responder before opening TCP; keep it so.
 - **Never send PTP or SETPEERS.** We advertise `timingProtocol: NTP`; PTP
   needs privileged UDP 319/320 and is for multi-room.
 - **Never stall the pacer.** The RTP timeline must advance at 44.1 kHz
   whether or not capture has data; send silence rather than nothing.
   A stalled timeline is how a receiver decides the stream is dead.
-- **Never block a Tauri command on the network from the main thread.**
-  Scan, connect, disconnect and status are `async` and run in
-  `spawn_blocking`; a synchronous command freezes the panel.
+- **Never block a Tauri command on the network or on WinRT from the main
+  thread.** Scan, connect, disconnect, status and transport are `async` and
+  run in `spawn_blocking`; a synchronous command freezes the panel.
+- **Never use media keys as the first choice for transport.** A key press
+  routes through the foreground window, and when the panel is focused that
+  is our own WebView, which swallows it. `media.rs` drives the Windows media
+  session (`Windows.Media.Control`) and falls back to keys only when no app
+  has registered one.
 - **Never write a hex code, radius, font, or duration into a component
   rule.** Colors route through the theme tier, geometry/type/motion through
   the skin tier; same discipline as DeetsMusic, DeetsRGB, DeetsSQL,
@@ -60,8 +73,17 @@ of the base block in `skin.css`.
   and streams a 440 Hz sine. `capture <ip>` does the same with WASAPI.
   `discover` lists speakers with their TXT records.
 - Windows Firewall: the HomePod sends unsolicited UDP to our timing and
-  control ports. A dev build prompts the first time; the installer will need
-  a rule (PLAN.md).
+  control ports. Windows does NOT prompt for it. The installed app asks once
+  (UAC, `netsh`) on its first run; `probe.exe` and the dev
+  `target\debug\deetsairplay.exe` each need a rule added by hand:
+  `netsh advfirewall firewall add rule name=... dir=in action=allow protocol=udp program=<exe>`
+  (his desk already has both).
+- The tray app has no console: session logs mirror to
+  `%APPDATA%\com.deetsairplay.app\deetsairplay.log`, connect failures included.
+  Read that before guessing.
+- Launch-at-startup and the firewall seeding are release-only
+  (`cfg(not(debug_assertions))`); a dev build never touches the registry or
+  the firewall.
 
 ## Working style
 
@@ -80,4 +102,11 @@ npm run tauri dev     # compiles Rust (first run slow); the app starts in the TR
 npx tsc --noEmit
 cd src-tauri && cargo check --bin probe --bin deetsairplay
 cd src-tauri && cargo run --bin probe -- discover
+npm run release          # NSIS installer under src-tauri/target/release/bundle/nsis/
 ```
+
+`Cargo.toml` sets `default-run = "deetsairplay"` because there are two
+binaries; without it `tauri dev` cannot pick one.
+
+His desk: HomePod "Living Room" at 192.168.86.32:7000 (AudioAccessory6,1),
+an Arcam AVR20 at .52. Both accept transient pairing.
