@@ -274,6 +274,28 @@ fn autostart_write(on: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The HomePod sends unsolicited UDP (timing requests) to us; without an
+/// inbound rule Windows drops it and the handshake stalls. Adding a rule
+/// needs elevation, so this asks once through UAC via netsh.
+#[cfg_attr(debug_assertions, allow(dead_code))] // release-only first-run seeding
+fn firewall_add_rule() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let args = format!(
+        "advfirewall firewall add rule name=\"DeetsAirplay\" dir=in action=allow protocol=udp enable=yes program=\"{}\"",
+        exe.display()
+    );
+    // Single-quoted PowerShell string: an apostrophe in the path doubles.
+    let cmd = format!("Start-Process -FilePath netsh -Verb RunAs -WindowStyle Hidden -ArgumentList '{}'", args.replace('\'', "''"));
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &cmd])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| format!("powershell: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn autostart_get() -> bool {
     autostart_enabled()
@@ -382,12 +404,22 @@ pub fn run() {
             #[cfg(not(debug_assertions))]
             {
                 let store = app.state::<Store>();
-                let seeded = store.settings.lock().unwrap().autostart_seeded;
-                if !seeded {
+                let (autostart_seeded, firewall_seeded) = {
+                    let s = store.settings.lock().unwrap();
+                    (s.autostart_seeded, s.firewall_seeded)
+                };
+                if !autostart_seeded {
                     if let Err(e) = autostart_write(true) {
-                        eprintln!("[autostart] {e}");
+                        airplay::log(&format!("[autostart] {e}"));
                     }
                     store.settings.lock().unwrap().autostart_seeded = true;
+                    store.save().ok();
+                }
+                if !firewall_seeded {
+                    if let Err(e) = firewall_add_rule() {
+                        airplay::log(&format!("[firewall] {e}"));
+                    }
+                    store.settings.lock().unwrap().firewall_seeded = true;
                     store.save().ok();
                 }
             }

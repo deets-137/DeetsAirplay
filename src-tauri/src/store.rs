@@ -31,6 +31,8 @@ pub struct Settings {
     /// Extra delay on top of the buffer, for lip-sync with a screen (ms).
     pub sync_offset_ms: u32,
     pub autostart_seeded: bool,
+    /// First installed run asked (once, with UAC) for the inbound-UDP rule.
+    pub firewall_seeded: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -42,7 +44,7 @@ pub struct LastSpeaker {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { last_speaker: None, volume: 60.0, latency: Latency::Auto, sync_offset_ms: 0, autostart_seeded: false }
+        Self { last_speaker: None, volume: 60.0, latency: Latency::Auto, sync_offset_ms: 0, autostart_seeded: false, firewall_seeded: false }
     }
 }
 

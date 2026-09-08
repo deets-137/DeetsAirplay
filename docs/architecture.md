@@ -17,7 +17,7 @@ next, volume).
 | `lib.rs` | Tauri setup, tray, panel show/hide, every `#[tauri::command]`, the one live session, the latency policy (`latency_frames`). |
 | `store.rs` | `%APPDATA%/com.deetsairplay.app/deetsairplay.json`: last speaker, volume, latency mode, sync offset. |
 | `capture.rs` | WASAPI loopback of the default render device → 44.1 kHz / 16-bit / stereo ring. Asks the engine to convert (`AUTOCONVERTPCM`), converts in software if refused, and runs a silent render stream so loopback never stalls. |
-| `media.rs` | Media keys via `SendInput` for the transport buttons. |
+| `media.rs` | Transport via the Windows media session (`Windows.Media.Control`), media keys as fallback; now-playing title/artist/state for the panel. |
 | `crypto/` | `random` (BCrypt RNG), `hkdf` (HMAC/HKDF-SHA512, hand-rolled), `srp` (SRP-6a client, HAP flavour), `mod.rs` (the ChaCha20-Poly1305 wrapper with HAP nonces). |
 | `airplay/mdns.rs` | `_airplay._tcp` browse, hand-rolled DNS parsing. |
 | `airplay/rtsp.rs` | The control connection with the encrypted framing; the event-channel responder. |

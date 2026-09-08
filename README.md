@@ -16,8 +16,9 @@ talks to is in this repo.
 - **Connection.** The live line: buffer, round trip, uptime, resend
   requests. Buffer is *Auto* (settles from the measured round trip) or
   *Fixed*; *Offset* adds delay for lip-sync with a screen.
-- **Transport.** Previous / play-pause / next go to whatever is playing on
-  the PC via media keys; the volume slider sets the HomePod's own volume.
+- **Transport.** Previous / play-pause / next drive the Windows media
+  session (media keys as a fallback), with the current title and artist
+  above them; the volume slider sets the HomePod's own volume.
 - **Launch at startup**, via the per-user `Run` registry key.
 
 ## Routing
@@ -33,7 +34,8 @@ real destination is the next structural step; see
 - The HomePod's **Allow Speaker & TV Access** set to *Everyone* or *Anyone
   on the Same Network* (Home app). No Apple developer account is involved.
 - Windows Firewall allowing inbound UDP to the app (the speaker sends
-  timing requests to us). Accept the prompt on first run.
+  timing requests to us). The installed app asks once, with a UAC prompt,
+  to add that rule on its first run; a dev build needs it added by hand.
 
 ## Latency
 
