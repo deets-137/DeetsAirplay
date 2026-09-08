@@ -1,0 +1,187 @@
+/* ============================================================
+   SKIN — non-color UI tokens (Tier 3)
+   ------------------------------------------------------------
+   Orthogonal to theme. Theme = color; skin = shape, type, size,
+   spacing, geometry, MOTION. Swapping [data-skin="..."] changes
+   the whole feel of the app without touching a single color.
+
+   Ported from ../DeetsMusic/src/styles/skin.css (via DeetsRGB). DeetsAirplay ships Press
+   only (DeetsFilm doctrine): the base block + the Press block are kept,
+   the other skins and the music-only tokens (--np-*, --vol-*, --lib-*,
+   --album-*, --storm-*, --ocean-*, --scrubber-*, --transport-*, --midi-*,
+   --nav-*) were pruned on the way over. Values are otherwise byte-identical.
+
+   Structure: a shared [data-skin] BASE holds every token that is
+   constant across skins (these ARE the "Vanilla" values). Each
+   named skin below overrides only what it changes. A skin may
+   override any base token; it just doesn't have to repeat them.
+
+   A skin NEVER names a color. Where a skin restyles a surface
+   (e.g. cards), it points a slot at a theme ROLE (var(--surface))
+   or DERIVES one from a role (color-mix) — the theme still owns
+   the hex. The UI references these tokens, never hardcoded values.
+   ============================================================ */
+
+[data-skin] {
+  /* -- typography -------------------------------------------- */
+  --font-title: "Liberation Serif", Georgia, "Times New Roman", serif;
+  --font-body:  "Liberation Sans", Arial, Helvetica, sans-serif;
+
+  --fs-title:   20px;
+  --fs-text:    14px;
+  --fs-subtext: 12px;
+
+  --fw-title:   700;
+  --fw-text:    400;
+  --fw-subtext: 400;
+
+  --lh-text:    1.45;
+
+  /* Editorial title rule — an underline under the app title + card titles
+     (.app-title / .panel__title). Ink is currentColor (--title), so the
+     theme owns the color; these knobs are pure geometry. Base is a NO-OP
+     so a new skin never inherits it by accident — a skin opts in.
+     FUTURE-SETTINGS §11: behavior (always/hover/off) may become a toggle. */
+  --title-underline:        none;
+  --title-underline-w:      auto;
+  --title-underline-offset: auto;
+
+  /* -- titlebar / chrome ------------------------------------- */
+  --titlebar-h:          40px;
+  --traffic-size:        14px;
+  --traffic-gap:         8px;
+  --traffic-glyph-fs:    11px;
+
+  /* -- shape ------------------------------------------------- */
+  --radius-panel:   10px;
+  --radius-control: 6px;
+
+  /* -- floating panels (menus / popovers) -------------------- */
+  --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.18);
+  --menu-min-w:   122px;
+  /* Menu material — same doctrine as --panel/--panel-backdrop, for the
+     FLOATING tier (.menu, .flyout, popovers, ctx-menu, pickers). Base is
+     opaque theme surface + no frost; Glass opts into a translucent mix +
+     blur. A skin points these at roles/derivations, never a hex. */
+  --menu-surface:  var(--surface);
+  --menu-backdrop: none;
+
+  /* -- bento panels ------------------------------------------ */
+  --panel-gap:          var(--space-3);
+  --panel-radius:       12px;
+  --panel-pad:          var(--space-3);
+  --panel-border-width: 0;          /* borderless: spacing/typography carry the
+                                       grouping (Glass opts back into a 1px edge) */
+
+  /* Card fill — which theme surface the cards sit on. This is a
+     SKIN decision (does this skin lift cards off the canvas?); the
+     theme owns the actual color. Vanilla = flush with the canvas. */
+  --panel:        var(--canvas);
+  --shadow-card:  none;             /* skins add a real card shadow */
+  --panel-backdrop: none;           /* frosted-glass blur behind the panel; a skin opts in */
+
+  /* -- canvas pattern (Press halftone / Retro-Future grid) --- */
+  /* A background-image painted on .app-body, BEHIND the cards. Its
+     color comes from a theme role (--border); the pattern + motion
+     are skin. Vanilla paints nothing. */
+  --canvas-bg:        none;
+  --canvas-bg-size:   auto;
+  --canvas-bg-repeat: repeat;
+  --canvas-anim:      none;
+
+  /* -- scrollbar (our own; color is a theme role) ------------ */
+  --scrollbar-w:      8px;
+  --scrollbar-radius: 999px;
+
+  /* -- micro-motion (hover/expand/spin) ----------------------- */
+  --dur-fast: 0.12s;
+  --dur-med:  0.18s;
+  --dur-spin: 0.7s;
+  --ease-ui:  ease;
+  --hover-lift: none;               /* interactive rows/tiles rise on hover; a skin opts in */
+
+  /* -- focus ring (one place to restyle every focus state) --- */
+  --focus-ring-w:   2px;
+  --focus-ring-off: 2px;
+
+  /* -- icon glyph sizes (SVG wrappers, not content art) ------ */
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 24px;
+
+  /* -- spacing scale ----------------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  /* -- DeetsAirplay: speaker list, connection, transport ------- */
+  --control-h:      22px;           /* sliders, selects: one row height */
+  --status-dot:     8px;            /* streaming / pairing / idle indicator */
+  --row-label-w:    56px;           /* "Buffer" / "Offset" / "Volume" gutter */
+  --range-track-h:  3px;
+  --range-thumb:    14px;
+  --speaker-row-h:  30px;
+  --transport-size: 28px;           /* prev / next glyph box */
+  --transport-main: 40px;           /* play / pause glyph box */
+  --transport-gap:  var(--space-4);
+  --dur-reorder:    0.38s;          /* a card sliding to a new slot */
+}
+
+/* ============================================================
+   PRESS — a risograph print shop. Ink on stock, not light on
+   glass: a poster grotesque over a spec-sheet mono, every corner
+   trimmed square, and NO blur anywhere. Where the other skins
+   cast a shadow, Press prints a SECOND PLATE slightly out of
+   register — a hard offset block of --ink-2, the theme-owned spot
+   color (themes.css). Blur radius is 0 in every shadow here, on
+   purpose; a soft edge would break the illusion.
+   (Retired the Desk skin, 2026-08-10 — same slot, new idiom.)
+   ============================================================ */
+[data-skin="press"] {
+  /* type — a condensed poster grotesque over a spec-sheet mono. Anton
+     ships one weight and it is heavy, so --fw-title drops to 400. Plex
+     Mono runs wide: the body sizes DOWN a step so a density line still
+     fits the 480px midi width, and takes extra leading to breathe. */
+  --font-title: "Anton", "Haettenschweiler", "Arial Narrow", sans-serif;
+  --font-body:  "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --fw-title:   400;
+  --fs-title:   22px;               /* condensed caps take the extra size well */
+  --fs-text:    13px;               /* 14 → 13: mono is wider per character */
+  --fs-subtext: 11px;
+  --lh-text:    1.7;
+
+  /* shape — everything comes off a trimmer */
+  --radius-panel:       0;
+  --radius-control:     0;
+  --panel-radius:       0;
+  --scrollbar-radius:   0;
+
+  /* cards — opaque stock, a printed keyline, and the offset plate. The
+     keyline is --panel-border (the theme's stronger hairline), not the
+     faint --border: at 0 radius a whisper edge reads as a rendering
+     artifact rather than a deliberate rule. */
+  --panel:              var(--surface);
+  --panel-border-width: 1px;
+  --panel-backdrop:     none;
+  --shadow-card:        4px 4px 0 var(--ink-2);
+
+  /* menus print too — same plate, one step further off register */
+  --menu-surface: var(--surface);
+  --shadow-panel: 5px 5px 0 var(--ink-2);
+
+  /* stock — a halftone screen, dotted in the theme's hairline. Tighter
+     and finer than Desk's old dot grid: at 7px it reads as paper tooth,
+     not as a pattern you are meant to look at. */
+  --canvas-bg:        radial-gradient(circle, var(--panel-border) 1.1px, transparent 1.4px);
+  --canvas-bg-size:   7px 7px;
+  --canvas-bg-repeat: repeat;
+
+  /* motion — a press stroke, not a settle. The lift moves on BOTH axes
+     (every other skin only rises): the sheet slides up-left off its ink,
+     widening the misregistration to 5px instead of floating above it. */
+  --dur-fast:   0.1s;
+  --dur-med:    0.16s;
+  --hover-lift: translate(-1px, -1px);
+}

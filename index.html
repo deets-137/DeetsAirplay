@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en" data-theme="lilac" data-skin="press">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Appearance pre-paint: resolve the saved theme (shared deets.theme key,
+         retired-id migration, OS light/dark fallback) before the stylesheet
+         applies, so a dark-mode launch never flashes Lilac. theme.ts owns the
+         same logic and re-applies it on load; keep the RETIRED map in sync.
+         Press is the only skin, so data-skin is fixed above. -->
+    <script>
+      (function () {
+        var R = { fairy: "lilac", glade: "green", hornet: "black-yellow", viper: "black-red" };
+        var dark = false;
+        try { dark = window.matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) {}
+        var saved = null;
+        try { saved = localStorage.getItem("deets.theme"); } catch (e) {}
+        document.documentElement.setAttribute("data-theme", saved ? (R[saved] || saved) : (dark ? "black-red" : "lilac"));
+      })();
+    </script>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>DeetsAirplay</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <!-- Frameless chrome, DeetsMusic lineage: the title IS the settings trigger,
+         the drag region is the gap, and the one light (×) hides to the tray. -->
+    <header class="titlebar">
+      <div class="settings">
+        <button class="app-title" id="settings-trigger" type="button" aria-haspopup="true" aria-expanded="false">DeetsAirplay</button>
+
+        <div class="menu" id="settings-menu" role="menu" hidden>
+          <div class="menu__row" data-row="theme">
+            <span class="menu__label">Theme</span>
+            <span class="menu__chev" aria-hidden="true">›</span>
+            <div class="flyout" role="menu" aria-label="Theme">
+              <button class="flyout__item" type="button" role="menuitemradio" data-theme="lilac"        data-theme-choice="lilac">Lilac</button>
+              <button class="flyout__item" type="button" role="menuitemradio" data-theme="green"        data-theme-choice="green">Green</button>
+              <button class="flyout__item" type="button" role="menuitemradio" data-theme="sepia"        data-theme-choice="sepia">Sepia</button>
+              <button class="flyout__item" type="button" role="menuitemradio" data-theme="moonlight"    data-theme-choice="moonlight">Moonlight</button>
+              <button class="flyout__item" type="button" role="menuitemradio" data-theme="black-yellow" data-theme-choice="black-yellow">Black &amp; Yellow</button>
+              <button class="flyout__item" type="button" role="menuitemradio" data-theme="black-red"    data-theme-choice="black-red">Black &amp; Red</button>
+            </div>
+          </div>
+          <button class="menu__row menu__row--toggle" id="autostart-toggle" type="button" role="menuitemcheckbox" aria-checked="false" data-row="autostart">
+            <span class="menu__label">Launch at startup</span>
+            <span class="menu__dot" aria-hidden="true"></span>
+          </button>
+          <button class="menu__row menu__row--action" id="quit" type="button" role="menuitem">
+            <span class="menu__label">Quit DeetsAirplay</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="drag-region" data-tauri-drag-region></div>
+
+      <div class="lights">
+        <button class="light light--close" id="tl-close" type="button" aria-label="Hide to tray">
+          <svg class="sigil" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.3 2.3L7.7 7.7M7.7 2.3L2.3 7.7" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="app-body">
+      <!-- Connection: who we are streaming to, the live line (buffer, round
+           trip, uptime), the buffer choice, and the two buttons. -->
+      <section class="panel connection" id="connection">
+        <header class="panel__head">
+          <h2 class="panel__title" id="conn-title">Connection</h2>
+          <span class="status" id="conn-status" data-status="idle"><span class="status__dot" aria-hidden="true"></span><span class="status__text">Idle</span></span>
+        </header>
+        <p class="conn__line" id="conn-line">Scan, pick a speaker, Connect.</p>
+        <div class="row">
+          <span class="row__label">Buffer</span>
+          <div class="row__pair">
+            <select class="select" id="latency-mode" aria-label="Buffer mode">
+              <option value="auto">Auto</option>
+              <option value="fixed">Fixed</option>
+            </select>
+            <input class="range" id="latency-ms" type="range" min="250" max="2000" step="50" value="300" aria-label="Buffer in milliseconds" />
+          </div>
+          <code class="row__value" id="latency-value">Auto</code>
+        </div>
+        <label class="row">
+          <span class="row__label">Offset</span>
+          <input class="range" id="sync-offset" type="range" min="0" max="1000" step="10" value="0" aria-label="Extra delay for lip-sync" />
+          <code class="row__value" id="sync-offset-value">+0 ms</code>
+        </label>
+        <div class="actions">
+          <button class="btn btn--quiet" id="disconnect" type="button">Disconnect</button>
+          <button class="btn" id="connect" type="button">Connect</button>
+        </div>
+      </section>
+
+      <!-- Transport: media keys to whatever is playing on the PC; the volume
+           slider sets the speaker's own volume over RTSP. -->
+      <section class="panel transport" id="transport">
+        <p class="np" id="np"><span class="np__title" id="np-title">Nothing playing</span><span class="np__artist" id="np-artist"></span></p>
+        <div class="transport__row" role="group" aria-label="Transport">
+          <button class="transport__btn" type="button" data-transport="previous" aria-label="Previous track">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM18 5v14L9 12z" /></svg>
+          </button>
+          <button class="transport__btn transport__btn--main" id="play-pause" type="button" data-transport="play_pause" data-playing="false" aria-label="Play or pause">
+            <svg class="glyph-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z" /></svg>
+            <svg class="glyph-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></svg>
+          </button>
+          <button class="transport__btn" type="button" data-transport="next" aria-label="Next track">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM6 5v14l9-7z" /></svg>
+          </button>
+        </div>
+        <label class="row">
+          <span class="row__label">Volume</span>
+          <input class="range" id="volume" type="range" min="0" max="100" step="1" value="60" aria-label="Speaker volume" />
+          <code class="row__value" id="volume-value">60%</code>
+        </label>
+      </section>
+
+      <!-- Speakers: every _airplay._tcp answer on the LAN, one row each.
+           Click a row to connect to it. -->
+      <section class="panel speakers" id="speakers">
+        <header class="panel__head">
+          <h2 class="panel__title">Speakers</h2>
+          <button class="btn btn--quiet btn--small" id="scan" type="button">Scan</button>
+        </header>
+        <ul class="speaker-list" id="speaker-list" role="listbox" aria-label="Speakers"></ul>
+      </section>
+
+
+      <p class="toast" id="toast" role="status" aria-live="polite" hidden></p>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,60 @@
+[package]
+name = "deetsairplay"
+version = "0.1.0"
+description = "Tray AirPlay 2 sender for Windows: system audio to a HomePod, hand-rolled protocol."
+authors = ["Aditya Sundaram"]
+edition = "2021"
+# Two binaries (the app + the probe); `tauri dev` runs a bare `cargo run`.
+default-run = "deetsairplay"
+
+[lib]
+# The `_lib` suffix keeps the lib name unique against the bin name on Windows
+# (same reason as DeetsMusic/DeetsRGB; see rust-lang/cargo#8519).
+name = "deetsairplay_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "deetsairplay"
+path = "src/main.rs"
+
+# The desk probe: discover, pair, and play a tone / the loopback capture from
+# a console, with every RTSP exchange logged. Run before touching the UI.
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The protocol is hand-rolled (mDNS, RTSP, TLV8, bplist, SRP flow, HKDF, ALAC
+# framing, RTP/NTP). Only the arithmetic and ciphers come from crates:
+num-bigint = "0.4"                       # SRP-6a modpow over the 3072-bit group
+sha2 = "0.10"                            # SHA-512 (SRP, HMAC/HKDF)
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+
+# OS bindings only: WASAPI loopback, media keys, CSPRNG, timer resolution.
+[dependencies.windows]
+version = "0.61"
+features = [
+  "Foundation",
+  "Media_Control",
+  "Win32_Foundation",
+  "Win32_Media",
+  "Win32_Media_Audio",
+  "Win32_Media_KernelStreaming",
+  "Win32_Media_Multimedia",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_Security_Cryptography",
+  "Win32_UI_Input_KeyboardAndMouse",
+]
+
+[profile.release]
+opt-level = 3

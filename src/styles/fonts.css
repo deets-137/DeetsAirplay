@@ -1,0 +1,33 @@
+/* ============================================================
+   FONTS — bundled faces for the Press skin (DeetsAirplay ships Press only)
+   ------------------------------------------------------------
+   Anton + IBM Plex Mono, copied from ../DeetsMusic/src/styles/
+   fonts/ with their NOTICE.txt (both SIL OFL 1.1).
+
+   ============================================================ */
+
+/* Press — Anton (title). One weight only; --fw-title is 400 there. */
+@font-face {
+  font-family: "Anton";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/Anton-Regular.woff2") format("woff2");
+}
+
+/* Press — IBM Plex Mono (body). SemiBold, not Bold: at mono widths the
+   bold face blocks up, and 600 already reads as emphasis. */
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/IBMPlexMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./fonts/IBMPlexMono-SemiBold.woff2") format("woff2");
+}
