@@ -32,6 +32,9 @@ pub struct Config {
     pub volume_pct: f64,
     pub client_name: String,
     pub log: bool,
+    /// Where transport commands relayed by the receiver (Siri, the Home app,
+    /// the HomePod's touch surface) are delivered. `None` ignores them.
+    pub on_command: Option<rtsp::CommandSink>,
 }
 
 pub const MIN_LATENCY_FRAMES: u32 = 11_025;
@@ -89,6 +92,11 @@ pub struct Session {
     uri: String,
     counters: Arc<Counters>,
     rtts: Arc<Mutex<Vec<f64>>>,
+    /// The receiver's own volume as of the last poll, 0–100. `None` until the
+    /// first successful GET_PARAMETER (or forever, if it does not support it).
+    receiver_volume: Arc<Mutex<Option<f64>>>,
+    /// When we last pushed a volume, so the poll does not fight the slider.
+    volume_set_at: Arc<Mutex<Instant>>,
     started: Instant,
     pub config: Config,
     pub speaker_name: String,
@@ -101,6 +109,36 @@ fn volume_db(pct: f64) -> f64 {
     } else {
         (pct * 3.0 - 300.0) / 10.0
     }
+}
+
+/// Inverse of [`volume_db`]. The receiver clamps to its own range, so a value
+/// outside 0–100 here means it reported something we do not model; clamp it
+/// rather than letting the slider jump off the end.
+fn volume_pct(db: f64) -> f64 {
+    if db <= -144.0 {
+        0.0
+    } else {
+        ((db * 10.0 + 300.0) / 3.0).clamp(0.0, 100.0)
+    }
+}
+
+/// Read the receiver's current volume. AirPlay volume is the receiver's own
+/// gain, not a second one stacked on ours, so this is what the user actually
+/// hears — including after a Siri "set the volume to 30 percent", which the
+/// HomePod applies locally and never announces.
+fn get_volume_on(ch: &mut Channel, id: &Identity, uri: &str) -> Option<f64> {
+    // This runs every 2 s for the life of the session, and the log is the
+    // first thing read when something goes wrong; keep it out of there.
+    ch.quiet = true;
+    let reply = ch.request("GET_PARAMETER", uri, "RTSP/1.0", id, &[], Some("text/parameters"), b"volume\r\n");
+    ch.quiet = false;
+    let r = reply.ok()?;
+    if !r.ok() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&r.body);
+    let db: f64 = text.split_once("volume:")?.1.trim().parse().ok()?;
+    Some(volume_pct(db))
 }
 
 fn set_volume_on(ch: &mut Channel, id: &Identity, uri: &str, pct: f64) -> Result<(), String> {
@@ -250,7 +288,13 @@ pub fn connect(ip: Ipv4Addr, port: u16, speaker_name: &str, config: Config, mut 
         let ev = std::net::TcpStream::connect_timeout(&SocketAddr::V4(SocketAddrV4::new(ip, event_port)), Duration::from_secs(5))
             .map_err(|e| format!("event channel {ip}:{event_port}: {e}"))?;
         let (rk, wk, st) = (keys.event_read, keys.event_write, stop.clone());
-        threads.push(std::thread::Builder::new().name("ap-events".into()).spawn(move || rtsp::serve_events(ev, rk, wk, st, log)).map_err(|e| e.to_string())?);
+        let sink = config.on_command.clone();
+        threads.push(
+            std::thread::Builder::new()
+                .name("ap-events".into())
+                .spawn(move || rtsp::serve_events(ev, rk, wk, st, log, sink))
+                .map_err(|e| e.to_string())?,
+        );
         if log {
             super::log(&format!("[session] event channel open on {event_port}"));
         }
@@ -400,13 +444,18 @@ pub fn connect(ip: Ipv4Addr, port: u16, speaker_name: &str, config: Config, mut 
     ch.set_read_timeout(Some(Duration::from_secs(5)));
     let control = Arc::new(Mutex::new(ch));
     let rtts = Arc::new(Mutex::new(Vec::<f64>::new()));
+    let receiver_volume = Arc::new(Mutex::new(None::<f64>));
+    let volume_set_at = Arc::new(Mutex::new(Instant::now()));
     {
         let (st, ctl, id, r) = (stop.clone(), control.clone(), identity.clone(), rtts.clone());
+        let (rv, vsa, poll_uri) = (receiver_volume.clone(), volume_set_at.clone(), uri.clone());
         threads.push(
             std::thread::Builder::new()
                 .name("ap-keepalive".into())
                 .spawn(move || {
                     let mut last = Instant::now();
+                    // Stop asking once the receiver has shown it will not answer.
+                    let mut volume_readable = true;
                     while !st.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(100));
                         if last.elapsed() < Duration::from_secs(2) {
@@ -423,6 +472,26 @@ pub fn connect(ip: Ipv4Addr, port: u16, speaker_name: &str, config: Config, mut 
                             }
                         } else if log {
                             super::log(&format!("[session] keep-alive failed"));
+                        }
+                        // A volume we pushed ourselves is still settling; reading
+                        // it back now would fight the slider the user is dragging.
+                        if !ok || !volume_readable || vsa.lock().unwrap().elapsed() < Duration::from_secs(2) {
+                            continue;
+                        }
+                        match get_volume_on(&mut ctl.lock().unwrap(), &id, &poll_uri) {
+                            Some(pct) => {
+                                let mut cur = rv.lock().unwrap();
+                                if cur.map(|c: f64| (c - pct).abs() >= 0.5).unwrap_or(true) && log {
+                                    super::log(&format!("[session] receiver volume {pct:.0}%"));
+                                }
+                                *cur = Some(pct);
+                            }
+                            None => {
+                                volume_readable = false;
+                                if log {
+                                    super::log("[session] receiver does not answer GET_PARAMETER volume; the slider will not follow it");
+                                }
+                            }
                         }
                     }
                 })
@@ -441,6 +510,8 @@ pub fn connect(ip: Ipv4Addr, port: u16, speaker_name: &str, config: Config, mut 
         uri,
         counters,
         rtts,
+        receiver_volume,
+        volume_set_at,
         started: Instant::now(),
         config: Config { latency_frames: latency, ..config },
         speaker_name: speaker_name.to_string(),
@@ -450,8 +521,16 @@ pub fn connect(ip: Ipv4Addr, port: u16, speaker_name: &str, config: Config, mut 
 impl Session {
     pub fn set_volume(&mut self, pct: f64) -> Result<(), String> {
         self.config.volume_pct = pct;
+        *self.volume_set_at.lock().unwrap() = Instant::now();
+        *self.receiver_volume.lock().unwrap() = Some(pct);
         let mut ch = self.control.lock().unwrap();
         set_volume_on(&mut ch, &self.identity, &self.uri, pct)
+    }
+
+    /// The receiver's own volume, 0–100, as of the last poll. Changes made on
+    /// the HomePod itself (Siri, the touch surface) show up here within ~2 s.
+    pub fn receiver_volume_pct(&self) -> Option<f64> {
+        *self.receiver_volume.lock().unwrap()
     }
 
     pub fn stats(&self) -> Stats {

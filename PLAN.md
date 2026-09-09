@@ -20,7 +20,9 @@ lives in [`docs/roadmap.md`](docs/roadmap.md).
   should just work; multi-room needs PTP and is out of scope.
 - **Metadata.** `SET_PARAMETER` with DMAP now-playing text and cover art
   (the HomePod shows nothing, but the Home app does).
-- **Volume from the speaker.** The HomePod's own volume changes (touch
-  surface, Siri) arrive as events on the event channel; the slider does
-  not follow them yet.
+- **Transport codes not yet seen.** `togl` and `stop` are mapped on the
+  pattern of the four observed on the desk (`play`, `paus`, `nitm`,
+  `pitm`) but have never actually arrived; an unrecognised code logs its
+  own name, so the next one costs one log line to find. See
+  `docs/protocol.md` §7.
 

@@ -72,6 +72,9 @@ fn main() {
                 volume_pct: volume,
                 client_name: "DeetsAirplay probe".into(),
                 log: true,
+                // The probe reports what the receiver sends; it must not reach
+                // in and drive whatever the desk happens to be playing.
+                on_command: None,
             };
             let capture;
             let source: Source = if cmd == "tone" {

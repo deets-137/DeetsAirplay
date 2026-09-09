@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use airplay::alac::SAMPLE_RATE;
 use airplay::mdns::{self, Speaker};
+use airplay::rtsp::RemoteCommand;
 use airplay::session::{self, Config, Session, Stats, MAX_LATENCY_FRAMES, MIN_LATENCY_FRAMES};
 use capture::Capture;
 use serde::Serialize;
@@ -82,6 +83,19 @@ fn start_live(speaker: LastSpeaker, settings: &Settings, rtt_p95_ms: Option<f64>
         volume_pct: settings.volume,
         client_name: "DeetsAirplay".into(),
         log: true,
+        // Siri, the Home app and the HomePod's touch surface relay transport
+        // commands over the event channel. They drive the PC's media session,
+        // the same path as the panel's buttons: the HomePod only ever hears
+        // our mixed output, so pausing the source is the only real pause.
+        on_command: Some(std::sync::Arc::new(|cmd| {
+            media::send(match cmd {
+                RemoteCommand::Play => media::Transport::Play,
+                RemoteCommand::Pause | RemoteCommand::Stop => media::Transport::Pause,
+                RemoteCommand::TogglePlayPause => media::Transport::PlayPause,
+                RemoteCommand::Next => media::Transport::Next,
+                RemoteCommand::Previous => media::Transport::Previous,
+            })
+        })),
     };
     airplay::log(&format!("[connect] {} at {}:{} (capture: {})", speaker.name, speaker.ip, speaker.port, capture.format_note));
     let session = session::connect(ip, speaker.port, &speaker.name, config, capture.source()).map_err(|e| {
@@ -164,7 +178,7 @@ async fn status(app: AppHandle) -> Result<Status, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let store = app.state::<Store>();
-        let settings = store.settings.lock().unwrap().clone();
+        let mut settings = store.settings.lock().unwrap().clone();
 
         // Drop a session whose threads died (receiver went away).
         let dead = state.live.lock().unwrap().as_ref().map(|l| !l.session.alive()).unwrap_or(false);
@@ -197,6 +211,19 @@ async fn status(app: AppHandle) -> Result<Status, String> {
             // Inside the 100 ms band: call it tuned so we never flap.
             if !l.retuned && l.session.stats().seconds >= 10 && l.session.stats().rtt_p95_ms > 0.0 {
                 l.retuned = true;
+            }
+        }
+
+        // AirPlay volume is the receiver's own gain, not a second one stacked
+        // on ours, so what session.rs polls back IS what the user is hearing.
+        // A Siri volume change produces no traffic at all, which makes the
+        // poll the only way the slider stays honest.
+        let heard = state.live.lock().unwrap().as_ref().and_then(|l| l.session.receiver_volume_pct());
+        if let Some(pct) = heard {
+            if (pct - settings.volume).abs() >= 1.0 {
+                settings.volume = pct;
+                store.settings.lock().unwrap().volume = pct;
+                store.save()?;
             }
         }
 

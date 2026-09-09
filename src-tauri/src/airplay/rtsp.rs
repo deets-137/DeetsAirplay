@@ -47,6 +47,9 @@ pub struct Channel {
     rx: Vec<u8>,
     keys: Option<Keys>,
     pub log: bool,
+    /// Suppress the request/response lines for a poll that repeats forever.
+    /// Receiver-initiated requests are still logged: those are never routine.
+    pub quiet: bool,
 }
 
 struct Keys {
@@ -62,7 +65,7 @@ impl Channel {
         let stream = TcpStream::connect_timeout(&addr, timeout)?;
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        Ok(Self { stream, cseq: 0, rx: Vec::new(), keys: None, log: false })
+        Ok(Self { stream, cseq: 0, rx: Vec::new(), keys: None, log: false, quiet: false })
     }
 
     pub fn local_ip(&self) -> String {
@@ -182,7 +185,7 @@ impl Channel {
             req.push_str(&format!("Content-Length: {}\r\n", body.len()));
         }
         req.push_str("\r\n");
-        if self.log {
+        if self.log && !self.quiet {
             super::log(&format!("→ {method} {uri} ({} body bytes)", body.len()));
         }
         let mut bytes = req.into_bytes();
@@ -193,7 +196,7 @@ impl Channel {
             if let Some((status, headers, body)) = self.take_message() {
                 if status.starts_with("RTSP/") || status.starts_with("HTTP/") {
                     let code = status.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
-                    if self.log {
+                    if self.log && !self.quiet {
                         super::log(&format!("← {status} ({} body bytes)", body.len()));
                     }
                     return Ok(Response { code, headers, body });
@@ -224,6 +227,45 @@ impl Channel {
     }
 }
 
+/// A command the receiver relays to us over the event channel. AirPlay 2
+/// wraps Apple's MediaRemote four-character codes in a `POST /command`
+/// binary plist: `{type: "sendMediaRemoteCommand", value: "paus", params: …}`.
+/// Siri's own commands carry `SenderBundleIdentifier =
+/// <com.apple.AssistantServices>` in `params`; the Home app and the HomePod's
+/// touch surface use the same envelope, so we do not filter on the sender.
+///
+/// The HomePod does NOT report its own volume here — a Siri volume change
+/// produces no traffic at all, which is why `session.rs` polls for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteCommand {
+    Play,
+    Pause,
+    TogglePlayPause,
+    Stop,
+    Next,
+    Previous,
+}
+
+impl RemoteCommand {
+    /// `None` for a code we have not seen on the desk yet; the caller logs it
+    /// so the mapping can grow from evidence rather than guesswork.
+    pub fn from_fourcc(value: &str) -> Option<Self> {
+        Some(match value {
+            "play" => Self::Play,
+            "paus" => Self::Pause,
+            "togl" => Self::TogglePlayPause,
+            "stop" => Self::Stop,
+            "nitm" => Self::Next,
+            "pitm" => Self::Previous,
+            _ => return None,
+        })
+    }
+}
+
+/// Where [`serve_events`] hands decoded commands. Runs on the event thread,
+/// so it must not block: `media.rs` calls WinRT, which returns promptly.
+pub type CommandSink = std::sync::Arc<dyn Fn(RemoteCommand) + Send + Sync>;
+
 /// The event channel is a REVERSE connection: the receiver pushes encrypted
 /// requests at us and we must answer each with a bare 200 or it tears the
 /// session down after ~30 s. Its keys are swapped relative to the control
@@ -235,6 +277,7 @@ pub fn serve_events(
     write_key: [u8; 32],
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     log: bool,
+    on_command: Option<CommandSink>,
 ) {
     use std::sync::atomic::Ordering;
     stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
@@ -289,10 +332,31 @@ pub fn serve_events(
             if plain.len() < total {
                 break;
             }
-            if log {
-                super::log(&format!("[events] {}", head.lines().next().unwrap_or_default()));
-            }
+            let line = head.lines().next().unwrap_or_default().to_string();
+            let parsed = super::bplist::decode(&plain[head_end + 4..total]);
             plain.drain(..total);
+            if log {
+                match &parsed {
+                    Some(v) => super::log(&format!("[events] {line} {}", super::bplist::pretty(v))),
+                    None => super::log(&format!("[events] {line}")),
+                }
+            }
+            if let Some(v) = &parsed {
+                if v.get("type").and_then(super::bplist::Value::as_str) == Some("sendMediaRemoteCommand") {
+                    match v.get("value").and_then(super::bplist::Value::as_str) {
+                        Some(code) => match RemoteCommand::from_fourcc(code) {
+                            Some(cmd) => {
+                                super::log(&format!("[events] remote command: {cmd:?}"));
+                                if let Some(sink) = &on_command {
+                                    sink(cmd);
+                                }
+                            }
+                            None => super::log(&format!("[events] unmapped MediaRemote code {code:?} — add it to RemoteCommand::from_fourcc")),
+                        },
+                        None => super::log("[events] sendMediaRemoteCommand with no value"),
+                    }
+                }
+            }
             let mut resp = String::from("RTSP/1.0 200 OK\r\nServer: AirTunes/550.10\r\n");
             if let Some(c) = cseq {
                 resp.push_str(&format!("CSeq: {c}\r\n"));

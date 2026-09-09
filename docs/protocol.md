@@ -102,8 +102,13 @@ All over the encrypted control channel, RTSP/1.0, URI
    Reply: `streams[0].dataPort`, `.controlPort`.
 6. `SET_PARAMETER`, `text/parameters`, body `volume: -15.000000`.
    0 % → −144 dB (mute); else `(pct·3 − 300)/10`, i.e. −30..0 dB.
+   This is the receiver's **own** gain, not a second one stacked on ours.
 7. `POST /feedback` every 2 s: the keep-alive. Its round trip is the RTT
-   the panel shows.
+   the panel shows. `GET_PARAMETER`, `text/parameters`, body `volume
+`
+   rides the same tick and reads that gain back (see §8). Both are sent
+   with `Channel::quiet`, so a poll that repeats forever stays out of the
+   log.
 8. `TEARDOWN` to end.
 
 ## 5. Audio (`alac.rs`, `rtp.rs`, pacer thread)
@@ -151,7 +156,50 @@ advertised floor; the panel's Auto mode starts at 300 ms.
 PTP (the multi-room protocol) needs UDP 319/320, privileged ports, and is
 not needed for a single HomePod. We advertise NTP and never send SETPEERS.
 
-## 7. Things that look wrong but are right
+## 7. Remote control, receiver → sender (`rtsp.rs`, `media.rs`)
+
+Verified on an AudioAccessory6,1 (HomePod, `sourceVersion` 960.13.1).
+
+**Transport arrives in band, on the event channel.** Siri, the Home app and
+the touch surface all relay through the reverse connection opened in §4.3 as
+`POST /command` with a bplist body:
+
+```
+{type: "sendMediaRemoteCommand", value: "paus", modernMediaRemoteCommand: "1",
+ params: {kMRMediaRemoteOptionSenderID: "SenderDevice = <HomePod>,
+          SenderBundleIdentifier = <com.apple.AssistantServices>, ...}}
+```
+
+`value` is an Apple MediaRemote four-character code. The ones seen on the
+desk: `play`, `paus`, `nitm` (next item), `pitm` (previous item). `togl` and
+`stop` are mapped on the same pattern but have not been observed. An
+unrecognised code is logged by name rather than swallowed — that log line is
+how `nitm`/`pitm` were found, and is how the next one will be.
+
+The 200 answering these is the bare one from §4.3. **Adding headers to it
+corrupts the receiver's timeline**, command or not.
+
+Commands drive the PC's Windows media session (`media.rs`), not the stream:
+the HomePod only ever hears our mixed output, so pausing the source is the
+only real pause. Siri says "pause", never "toggle", so `Transport` carries
+explicit `Play`/`Pause` (`TryPlayAsync`/`TryPauseAsync`) — toggling an
+already-paused PC would start it playing. The media-key fallback can only
+toggle, so it checks `now_playing().playing` first.
+
+**Volume does not arrive at all.** A Siri volume change produces *no* traffic
+on either channel — the HomePod applies it locally and announces nothing.
+`GET_PARAMETER` (§4.7) is the only way to learn it, which is why the slider
+is driven by a poll rather than an event. The poll is skipped for 2 s after
+a local `SET_PARAMETER` so it cannot fight a slider mid-drag.
+
+**There is no DACP server here, deliberately.** We send `DACP-ID` and
+`Active-Remote` on every request, which is the half of that contract a sender
+owes; the other half — advertising `iTunes_Ctrl_<id>._dacp._tcp` over mDNS and
+serving `/ctrl-int/1/…` — is unnecessary, because this receiver uses the event
+channel instead. Building it would mean binding UDP 5353, which Windows' own
+mDNS responder already holds.
+
+## 8. Things that look wrong but are right
 
 - `X-Apple-HKP: 4`, not 3, for transient.
 - The event channel keys are swapped relative to the control channel.

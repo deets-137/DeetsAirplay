@@ -195,8 +195,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Volume goes live as you drag, throttled to the RTSP round trip.
   let volTimer = 0;
+  // A drag owns the slider for a moment afterwards, so the poll below cannot
+  // yank it back to a value that is already on its way out.
+  let volumeHeldUntil = 0;
   volume.addEventListener("input", () => {
     volumeValue.textContent = `${volume.value}%`;
+    volumeHeldUntil = Date.now() + 2000;
     window.clearTimeout(volTimer);
     volTimer = window.setTimeout(() => void volumeSet(Number(volume.value)).catch((e) => notify(String(e), true)), 120);
   });
@@ -251,6 +255,14 @@ window.addEventListener("DOMContentLoaded", () => {
       syncOffset.value = String(s.settings.sync_offset_ms);
       reflectLatency();
       if (!selected && lastSpeaker) selected = lastSpeaker;
+    }
+    // The HomePod owns the volume — Siri and its touch surface move it and
+    // announce nothing, so the back-end polls it back. Follow it, so the
+    // slider reads what is actually being heard.
+    const heard = String(Math.round(s.settings.volume));
+    if (Date.now() > volumeHeldUntil && volume.value !== heard) {
+      volume.value = heard;
+      volumeValue.textContent = `${heard}%`;
     }
     const c = s.connected;
     const wasLive = connectedName;

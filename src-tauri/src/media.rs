@@ -17,6 +17,10 @@ pub enum Transport {
     Previous,
     PlayPause,
     Next,
+    /// Explicit states, which only the receiver asks for: Siri says "pause",
+    /// not "toggle", and toggling an already-paused PC would start it playing.
+    Play,
+    Pause,
 }
 
 fn tap(vk: VIRTUAL_KEY) {
@@ -41,16 +45,24 @@ pub fn send(t: Transport) {
             Transport::Previous => session.TrySkipPreviousAsync()?,
             Transport::PlayPause => session.TryTogglePlayPauseAsync()?,
             Transport::Next => session.TrySkipNextAsync()?,
+            Transport::Play => session.TryPlayAsync()?,
+            Transport::Pause => session.TryPauseAsync()?,
         };
         op.get()
     };
     if via_session().unwrap_or(false) {
         return;
     }
+    // Keys can only toggle, so an explicit Play/Pause taps only when the
+    // current state disagrees. With no media session at all we know nothing;
+    // now_playing() reports not-playing, so Play taps and Pause stays put.
+    if matches!(t, Transport::Play | Transport::Pause) && now_playing().playing == matches!(t, Transport::Play) {
+        return;
+    }
     tap(match t {
         Transport::Previous => VK_MEDIA_PREV_TRACK,
-        Transport::PlayPause => VK_MEDIA_PLAY_PAUSE,
         Transport::Next => VK_MEDIA_NEXT_TRACK,
+        _ => VK_MEDIA_PLAY_PAUSE,
     })
 }
 
