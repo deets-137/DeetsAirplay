@@ -1,12 +1,12 @@
 //! Tauri glue: the tray, the panel, and every `#[tauri::command]`. The
-//! AirPlay stack lives in `airplay/`, capture in `capture.rs`; this file
-//! only owns the one live session and the settings store.
+//! AirPlay stack and the capture live in the shared `deets-airplay` crate
+//! (`../crates/airplay`); this file only owns the one live session and the
+//! settings store.
 
-pub mod airplay;
-pub mod capture;
-pub mod crypto;
 pub mod media;
 pub mod store;
+
+use deets_airplay::{airplay, capture};
 
 use std::net::Ipv4Addr;
 use std::sync::Mutex;

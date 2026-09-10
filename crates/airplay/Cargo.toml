@@ -1,0 +1,39 @@
+[package]
+name = "deets-airplay"
+version = "0.2.0"
+description = "AirPlay 2 sender for Windows, hand-rolled: mDNS, RTSP, HAP transient pairing, ALAC over encrypted RTP, WASAPI capture. Shared by DeetsAirplay and DeetsMusic."
+authors = ["Aditya Sundaram"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/deets-137/DeetsAirplay"
+
+[lib]
+name = "deets_airplay"
+path = "src/lib.rs"
+
+[dependencies]
+# The protocol is hand-rolled (mDNS, RTSP, TLV8, bplist, SRP flow, HKDF, ALAC
+# framing, RTP/NTP). Only the arithmetic and ciphers come from crates:
+num-bigint = "0.4"                       # SRP-6a modpow over the 3072-bit group
+sha2 = "0.10"                            # SHA-512 (SRP, HMAC/HKDF)
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+windows-core = "0.61"                    # the `implement` macro (process-loopback completion handler)
+
+# OS bindings only: WASAPI loopback (device + per-process), the volume mixer,
+# process tree, CSPRNG, timer resolution / MMCSS.
+[dependencies.windows]
+version = "0.61"
+features = [
+  "Win32_Foundation",
+  "Win32_Media",
+  "Win32_Media_Audio",
+  "Win32_Media_KernelStreaming",
+  "Win32_Media_Multimedia",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_Security_Cryptography",
+]

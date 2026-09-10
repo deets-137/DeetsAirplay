@@ -10,14 +10,16 @@ Three cards: **Speakers** (scrollable mDNS list), **Connection** (name, live
 line, buffer choice, Connect/Disconnect), **Transport** (prev / play-pause /
 next, volume).
 
-## Back-end (`src-tauri/src/`)
+## The crate (`crates/airplay/src/`, `deets-airplay`) + the app (`src-tauri/src/`)
+
+The sender is a library crate shared with DeetsMusic; the tray app is a thin layer on it.
 
 | Path | Owns |
 |---|---|
-| `lib.rs` | Tauri setup, tray, panel show/hide, every `#[tauri::command]`, the one live session, the latency policy (`latency_frames`). |
-| `store.rs` | `%APPDATA%/com.deetsairplay.app/deetsairplay.json`: last speaker, volume, latency mode, sync offset. |
+| `src-tauri/src/lib.rs` | Tauri setup, tray, panel show/hide, every `#[tauri::command]`, the one live session, the latency policy (`latency_frames`). |
+| `src-tauri/src/store.rs` | `%APPDATA%/com.deetsairplay.app/deetsairplay.json`: last speaker, volume, latency mode, sync offset. |
 | `capture.rs` | WASAPI loopback of the default render device → 44.1 kHz / 16-bit / stereo ring. Asks the engine to convert (`AUTOCONVERTPCM`), converts in software if refused, and runs a silent render stream so loopback never stalls. |
-| `media.rs` | Transport via the Windows media session (`Windows.Media.Control`), media keys as fallback; now-playing title/artist/state for the panel. |
+| `src-tauri/src/media.rs` | Transport via the Windows media session (`Windows.Media.Control`), media keys as fallback; now-playing title/artist/state for the panel. |
 | `crypto/` | `random` (BCrypt RNG), `hkdf` (HMAC/HKDF-SHA512, hand-rolled), `srp` (SRP-6a client, HAP flavour), `mod.rs` (the ChaCha20-Poly1305 wrapper with HAP nonces). |
 | `airplay/mdns.rs` | `_airplay._tcp` browse, hand-rolled DNS parsing. |
 | `airplay/rtsp.rs` | The control connection with the encrypted framing; the event-channel responder. |
@@ -25,7 +27,7 @@ next, volume).
 | `airplay/tlv8.rs`, `airplay/bplist.rs` | The two encodings. |
 | `airplay/alac.rs`, `airplay/rtp.rs` | Uncompressed ALAC frames; RTP/sync/timing/retransmit packets and NTP math. |
 | `airplay/session.rs` | `connect()` runs the handshake, then spawns pacer / timing / control / events / keep-alive threads. `Session::stats()` feeds the live line. |
-| `bin/probe.rs` | Console probe: `discover`, `tone <ip>`, `capture <ip>`, `bplist`. |
+| `src-tauri/src/bin/probe.rs` | Console probe: `discover`, `tone <ip>`, `capture <ip>`, `bplist`. |
 
 Threads while streaming:
 

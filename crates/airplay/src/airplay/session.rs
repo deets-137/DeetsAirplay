@@ -37,6 +37,21 @@ pub struct Config {
     pub on_command: Option<rtsp::CommandSink>,
 }
 
+/// Now-playing text for [`Session::set_metadata`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Metadata {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+}
+
+/// One DMAP atom: 4-char code, big-endian length, payload.
+fn dmap(code: &[u8; 4], payload: &[u8], out: &mut Vec<u8>) {
+    out.extend_from_slice(code);
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+}
+
 pub const MIN_LATENCY_FRAMES: u32 = 11_025;
 pub const MAX_LATENCY_FRAMES: u32 = 88_200;
 
@@ -525,6 +540,52 @@ impl Session {
         *self.receiver_volume.lock().unwrap() = Some(pct);
         let mut ch = self.control.lock().unwrap();
         set_volume_on(&mut ch, &self.identity, &self.uri, pct)
+    }
+
+    /// The RTP timestamp the pacer is at right now (`latency + frames sent`);
+    /// what `RTP-Info` and the progress line are expressed in.
+    fn rtp_now(&self) -> u32 {
+        (self.config.latency_frames as u64 + self.counters.packets.load(Ordering::Relaxed) * FRAMES_PER_PACKET as u64) as u32
+    }
+
+    fn set_parameter(&self, content_type: &str, body: &[u8], what: &str) -> Result<(), String> {
+        let now = self.rtp_now();
+        let mut ch = self.control.lock().unwrap();
+        let r = ch
+            .request("SET_PARAMETER", &self.uri, "RTSP/1.0", &self.identity, &[("RTP-Info", format!("rtptime={now}"))], Some(content_type), body)
+            .map_err(|e| format!("SET_PARAMETER {what}: {e}"))?;
+        if !r.ok() {
+            return Err(format!("SET_PARAMETER {what} returned {}", r.code));
+        }
+        Ok(())
+    }
+
+    /// Tell the receiver what is playing (DMAP `mlit`: name, artist, album).
+    /// The HomePod has no screen; the Home app and an iPhone's lock screen show it.
+    pub fn set_metadata(&self, meta: &Metadata) -> Result<(), String> {
+        let mut item = Vec::new();
+        dmap(b"minm", meta.title.as_bytes(), &mut item);
+        dmap(b"asar", meta.artist.as_bytes(), &mut item);
+        dmap(b"asal", meta.album.as_bytes(), &mut item);
+        let mut body = Vec::new();
+        dmap(b"mlit", &item, &mut body);
+        self.set_parameter("application/x-dmap-tagged", &body, "metadata")
+    }
+
+    /// Cover art for the current item. JPEG or PNG bytes, as-is.
+    pub fn set_artwork(&self, bytes: &[u8], content_type: &str) -> Result<(), String> {
+        self.set_parameter(content_type, bytes, "artwork")
+    }
+
+    /// Where the current item is: `progress: start/current/end` in RTP time,
+    /// so the receiver's clients can draw a scrubber.
+    pub fn set_progress(&self, current_secs: f64, duration_secs: f64) -> Result<(), String> {
+        let now = self.rtp_now() as i64;
+        let start = now - (current_secs.max(0.0) * SAMPLE_RATE as f64) as i64;
+        let end = start + (duration_secs.max(current_secs).max(0.0) * SAMPLE_RATE as f64) as i64;
+        let body = format!("progress: {}/{}/{}
+", start as u32, now as u32, end as u32);
+        self.set_parameter("text/parameters", body.as_bytes(), "progress")
     }
 
     /// The receiver's own volume, 0–100, as of the last poll. Changes made on

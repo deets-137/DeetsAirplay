@@ -31,28 +31,18 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# The protocol is hand-rolled (mDNS, RTSP, TLV8, bplist, SRP flow, HKDF, ALAC
-# framing, RTP/NTP). Only the arithmetic and ciphers come from crates:
-num-bigint = "0.4"                       # SRP-6a modpow over the 3072-bit group
-sha2 = "0.10"                            # SHA-512 (SRP, HMAC/HKDF)
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# The sender itself (mDNS, RTSP, pairing, ALAC/RTP, WASAPI capture) is the
+# shared crate under ../crates/airplay; DeetsMusic depends on the same crate by git.
+deets-airplay = { path = "../crates/airplay" }
 
-# OS bindings only: WASAPI loopback, media keys, CSPRNG, timer resolution.
+# OS bindings the APP needs on top of the crate: the Windows media session and
+# media keys (media.rs).
 [dependencies.windows]
 version = "0.61"
 features = [
   "Foundation",
   "Media_Control",
   "Win32_Foundation",
-  "Win32_Media",
-  "Win32_Media_Audio",
-  "Win32_Media_KernelStreaming",
-  "Win32_Media_Multimedia",
-  "Win32_System_Com",
-  "Win32_System_Com_StructuredStorage",
-  "Win32_System_Threading",
-  "Win32_System_Variant",
-  "Win32_Security_Cryptography",
   "Win32_UI_Input_KeyboardAndMouse",
 ]
 

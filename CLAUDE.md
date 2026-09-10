@@ -7,7 +7,11 @@ mDNS, RTSP, HAP transient pairing (SRP, PIN 3939), ChaCha20-framed control
 channel, uncompressed ALAC over encrypted RTP, NTP timing.
 
 `README.md` is the cold start. `docs/protocol.md` is the wire recipe; read it
-before touching `src-tauri/src/airplay/` or `crypto/`. `docs/architecture.md`
+before touching `crates/airplay/src/airplay/` or `crypto/`. **The sender is a
+library crate, `crates/airplay` (`deets-airplay`), shared with DeetsMusic**
+(which depends on it by git, rev-pinned): `airplay/`, `crypto/`, `capture.rs`.
+`src-tauri/` is only the tray app on top of it. A change to the crate is a
+change to both apps; bump DeetsMusic's `rev` after pushing. `docs/architecture.md`
 describes what exists. `PLAN.md` holds only what is *not* built, and
 `docs/roadmap.md` holds the one big item: audio routing (the WASAPI tap
 today vs. a from-scratch virtual output driver, which he also wants for a
@@ -31,6 +35,19 @@ Discord-bot project).
 - **Never stall the pacer.** The RTP timeline must advance at 44.1 kHz
   whether or not capture has data; send silence rather than nothing.
   A stalled timeline is how a receiver decides the stream is dead.
+- **Never let a windows-rs `PROPVARIANT` drop when it borrows a blob.** The
+  per-process capture passes `AUDIOCLIENT_ACTIVATION_PARAMS` as a `VT_BLOB`
+  pointing at the stack; the struct's Drop runs `PropVariantClear`, which
+  frees that pointer and corrupts the heap (`STATUS_HEAP_CORRUPTION` on
+  connect, found 2026-09-10). `capture.rs` keeps it in `ManuallyDrop`.
+- **Never poll the process-loopback device, and never test the SILENT flag
+  as bit 1.** Per-process capture (`Capture::start_process`) delivers packets
+  only event-driven (`AUDCLNT_STREAMFLAGS_EVENTCALLBACK`), and
+  `AUDCLNT_BUFFERFLAGS_SILENT` is 0x2 — on that device a silent buffer is
+  uninitialised memory, not zeros. Also: the "include tree" flag does not
+  reach from a Tauri host exe into its WebView2 children; target the
+  `msedgewebview2.exe` child (`mixer::children_named`). Measured 2026-09-10;
+  DeetsMusic docs/AIRPLAY.md §10 has the numbers.
 - **Never block a Tauri command on the network or on WinRT from the main
   thread.** Scan, connect, disconnect, status and transport are `async` and
   run in `spawn_blocking`; a synchronous command freezes the panel.
@@ -71,6 +88,9 @@ of the base block in `skin.css`.
 - When changing anything in the handshake or packet path, run the probe
   first: `cargo run --bin probe -- tone <ip>` prints every RTSP exchange
   and streams a 440 Hz sine. `capture <ip>` does the same with WASAPI.
+  `process <ip> --pid N [--mute-after S]` streams one process tree only
+  (DeetsMusic's per-process path) and can mute that app in the Windows
+  mixer mid-stream — the test for whether the tap survives the mute.
   `discover` lists speakers with their TXT records.
 - Windows Firewall: the HomePod sends unsolicited UDP to our timing and
   control ports. Windows does NOT prompt for it. The installed app asks once
