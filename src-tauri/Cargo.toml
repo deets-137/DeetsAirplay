@@ -1,6 +1,6 @@
 [package]
 name = "deetsairplay"
-version = "0.1.1"
+version = "0.1.2"
 description = "Tray AirPlay 2 sender for Windows: system audio to a HomePod, hand-rolled protocol."
 authors = ["Aditya Sundaram"]
 edition = "2021"
