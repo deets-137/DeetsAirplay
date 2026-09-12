@@ -1,6 +1,6 @@
 [package]
 name = "deets-airplay"
-version = "0.2.0"
+version = "0.2.1"
 description = "AirPlay 2 sender for Windows, hand-rolled: mDNS, RTSP, HAP transient pairing, ALAC over encrypted RTP, WASAPI capture. Shared by DeetsAirplay and DeetsMusic."
 authors = ["Aditya Sundaram"]
 edition = "2021"

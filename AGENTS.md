@@ -80,6 +80,7 @@ of the base block in `skin.css`.
   (his desk already has both).
 - The tray app has no console: session logs mirror to
   `%APPDATA%\com.deetsairplay.app\deetsairplay.log`, connect failures included.
+  It rotates at 512 KB into `deetsairplay.1.log`, one generation kept (2026-09-11).
   Read that before guessing.
 - Launch-at-startup and the firewall seeding are release-only
   (`cfg(not(debug_assertions))`); a dev build never touches the registry or

@@ -4,3 +4,7 @@ src-tauri/target
 src-tauri/gen/schemas
 .DS_Store
 installers
+
+# the shared crate, checked on its own (cargo check inside crates/airplay)
+crates/airplay/target/
+crates/airplay/Cargo.lock
