@@ -49,6 +49,13 @@ pub fn children_named(root: u32, name: &str) -> Vec<u32> {
     snapshot().into_iter().filter(|(_, parent, exe)| *parent == root && *exe == name).map(|(pid, _, _)| pid).collect()
 }
 
+/// Every running process id against its exe name, lower-cased. `claim` uses it
+/// to tell a live holder from a pid that died or was handed to something else,
+/// and takes the whole map so a list of claims costs one snapshot, not one each.
+pub fn running_exes() -> HashMap<u32, String> {
+    snapshot().into_iter().map(|(pid, _, exe)| (pid, exe)).collect()
+}
+
 /// `root` and every descendant process, by id.
 pub fn process_tree(root: u32) -> HashSet<u32> {
     let parent_of: HashMap<u32, u32> = snapshot().into_iter().map(|(pid, parent, _)| (pid, parent)).collect();

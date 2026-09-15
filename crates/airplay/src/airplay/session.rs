@@ -113,8 +113,20 @@ pub struct Session {
     /// When we last pushed a volume, so the poll does not fight the slider.
     volume_set_at: Arc<Mutex<Instant>>,
     started: Instant,
+    /// This session's entry in the machine-wide claim list (`crate::claim`),
+    /// released when the session goes away by any route.
+    claim: u64,
     pub config: Config,
     pub speaker_name: String,
+}
+
+/// A session that is dropped without `disconnect` (an error path, a panic
+/// unwinding, an app that just lets go) must still release its speaker, or
+/// the other app would keep reporting it as taken for the life of the process.
+impl Drop for Session {
+    fn drop(&mut self) {
+        crate::claim::release(self.claim);
+    }
 }
 
 fn volume_db(pct: f64) -> f64 {
@@ -517,6 +529,12 @@ pub fn connect(ip: Ipv4Addr, port: u16, speaker_name: &str, config: Config, mut 
     if log {
         super::log(&format!("[session] streaming: data {data_addr}, control {ctrl_addr}, latency {latency} frames ({} ms)", latency * 1000 / SAMPLE_RATE));
     }
+    // Tell the rest of the family we have this speaker (claim.rs). Taken on
+    // success rather than before the attempt: a claim is how the other app
+    // explains itself to the user, not a lock, and the receiver arbitrates a
+    // genuine race anyway.
+    let claim = crate::claim::hold(&config.client_name, speaker_name, &ip.to_string(), port);
+
     Ok(Session {
         stop,
         threads,
@@ -530,10 +548,18 @@ pub fn connect(ip: Ipv4Addr, port: u16, speaker_name: &str, config: Config, mut 
         started: Instant::now(),
         config: Config { latency_frames: latency, ..config },
         speaker_name: speaker_name.to_string(),
+        claim,
     })
 }
 
 impl Session {
+    /// Say what this stream carries, for the machine-wide claim: the whole
+    /// PC's output, or a named set of apps. A caller that never says leaves it
+    /// `Unknown`, and the other app simply says less about it.
+    pub fn describe_send(&self, send: crate::claim::Send) {
+        crate::claim::describe(self.claim, send);
+    }
+
     pub fn set_volume(&mut self, pct: f64) -> Result<(), String> {
         self.config.volume_pct = pct;
         *self.volume_set_at.lock().unwrap() = Instant::now();
