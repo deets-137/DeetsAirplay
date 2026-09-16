@@ -5,6 +5,8 @@
 //! - `airplay`  find a speaker, pair, stream (`airplay::session::connect`)
 //! - `crypto`   the primitives the handshake needs
 //! - `capture`  WASAPI loopback (the default output, or one process tree) as a pacer `Source`
+//! - `resample` sample-rate conversion and 16-bit quantization (linear, windowed sinc, TPDF dither)
+//! - `fidelity` dev tool behind `probe fidelity`: measures the capture's conversion (never called by the apps)
 //! - `mixer`    mute/unmute an app's own sessions in the Windows volume mixer
 //! - `claim`    which of this family's apps is holding which speaker, machine-wide
 //!
@@ -15,4 +17,6 @@ pub mod airplay;
 pub mod capture;
 pub mod claim;
 pub mod crypto;
+pub mod fidelity;
 pub mod mixer;
+pub mod resample;

@@ -18,7 +18,9 @@ The sender is a library crate shared with DeetsMusic; the tray app is a thin lay
 |---|---|
 | `src-tauri/src/lib.rs` | Tauri setup, tray, panel show/hide, every `#[tauri::command]`, the one live session, the latency policy (`latency_frames`). |
 | `src-tauri/src/store.rs` | `%APPDATA%/com.deetsairplay.app/deetsairplay.json`: last speaker, volume, latency mode, sync offset. |
-| `capture.rs` | WASAPI loopback of the default render device → 44.1 kHz / 16-bit / stereo ring. Asks the engine to convert (`AUTOCONVERTPCM`), converts in software if refused, and runs a silent render stream so loopback never stalls. |
+| `capture.rs` | WASAPI loopback of the default render device → 44.1 kHz / 16-bit / stereo ring. Asks the engine to convert (`AUTOCONVERTPCM`), converts in software (`resample::Sinc` + TPDF dither) if refused, and runs a silent render stream so loopback never stalls. |
+| `resample.rs` | Hand-rolled conversion: `Linear` (the old fallback, kept for the probe), `Sinc` (polyphase Kaiser-windowed sinc for one exact rational ratio, 100 dB rejection), `Quantizer` (f32 → i16, rounded, optional TPDF dither). Streams in chunks of any size. |
+| `fidelity.rs` | Dev tool behind `probe fidelity`; the apps never call it. § Measuring audio quality. |
 | `src-tauri/src/media.rs` | Transport via the Windows media session (`Windows.Media.Control`), media keys as fallback; now-playing title/artist/state for the panel. |
 | `src-tauri/src/music.rs` | DeetsMusic's loopback bridge, hand-rolled HTTP: the now-playing card (cover, position), precise transport, the hand-over. Fails into "not running", which is the usual case. |
 | `claim.rs` | Which app on this PC holds which speaker, and what its stream carries (`%LOCALAPPDATA%\Deets\airplay-claims.tsv`). Written by `session::connect`, dropped by `Session`'s `Drop`. |
@@ -29,7 +31,7 @@ The sender is a library crate shared with DeetsMusic; the tray app is a thin lay
 | `airplay/tlv8.rs`, `airplay/bplist.rs` | The two encodings. |
 | `airplay/alac.rs`, `airplay/rtp.rs` | Uncompressed ALAC frames; RTP/sync/timing/retransmit packets and NTP math. |
 | `airplay/session.rs` | `connect()` runs the handshake, then spawns pacer / timing / control / events / keep-alive threads. `Session::stats()` feeds the live line. |
-| `src-tauri/src/bin/probe.rs` | Console probe: `discover`, `tone <ip>`, `capture <ip>`, `bplist`. |
+| `src-tauri/src/bin/probe.rs` | Console probe: `discover`, `tone <ip>`, `capture <ip>`, `process <ip>`, `selfcapture`, `fidelity`, `bplist`. |
 
 Threads while streaming:
 
@@ -80,6 +82,67 @@ Two routing rules, both in `lib.rs`:
   already rerouted to the same receiver. Never DeetsMusic's volume while we
   are capturing it — that attenuates one app inside the mix we are sending
   instead of moving the speaker.
+
+## Measuring audio quality
+
+`probe fidelity` puts numbers on what the capture's conversion does to the
+sound. It needs no speaker: the network leg is lossless (ALAC), so all the
+loss this crate can add happens between the Windows mix and the 44.1 kHz /
+16-bit ring. Kept as a permanent tool, like the rest of the probe.
+
+```bash
+cd src-tauri
+cargo run --release --bin probe -- fidelity offline [--rate 48000]   # no device, no sound
+cargo run --release --bin probe -- fidelity [--no-mute]              # plays the tones itself
+cargo run --release --bin probe -- fidelity --listen 35 [--no-mute]  # something else plays them
+cargo run --bin probe -- fidelity js                                 # the snippet for --listen
+```
+
+Build it `--release`: the analysis is a 65 536-point FFT per row, and the
+CPU line compares candidates, which a debug build distorts.
+
+**What a run does.**
+1. Mutes the master volume (the loopback sits before it, so the recording
+   stays full scale) and restores it on exit, a panic, or Ctrl+C.
+   `--no-mute` if a device turns out to tap after the mute (the run says so).
+2. Starts the shipping capture (`Capture::start`) and a raw loopback in the
+   mix format, side by side.
+3. Records 1 s of silence first. Any peak above -80 dBFS means something else
+   is playing, and the run stops: other sound lands in every number.
+4. Plays the schedule (`TESTS`: 0.5 s lead, then 3 s tone + 1 s gap per
+   test) at the mix rate, so playing it adds no conversion.
+5. Converts the raw recording offline with each candidate, in 480-frame
+   chunks like the capture thread, and makes a perfect copy of the schedule at
+   44.1 kHz with TPDF dither as the ceiling.
+6. For each test and each row: a 7-term Blackman-Harris window and FFT over
+   65 536 samples, starting 1 s after that tone's onset (the first sample
+   above -20 dBFS marks the schedule's start).
+
+**The rows.**
+
+| Row | What it is |
+|---|---|
+| `R` | The ceiling: the schedule made at 44.1 kHz, dithered to 16-bit. No device. |
+| `device` | The raw mix-format recording. In `--listen` mode: what local listening gets after Chromium's resample. |
+| `E` | The shipping capture as delivered (the engine's conversion, or `L` if the engine refused; the `[capture]` line says which). |
+| `L` | `resample::Linear`, the fallback until 2026-09-16. |
+| `S` | `resample::Sinc`, rounded to 16-bit, no dither. |
+| `S+D` | `resample::Sinc` with TPDF dither: the capture fallback since 2026-09-16. |
+
+**The columns.** `level dB`: each tone against what was sent (roll-off near
+20 kHz shows here). `THD+N dB`: everything in 20 Hz–20 kHz that is not a tone,
+against the tones. `resid dBFS`: the same residual against a full-scale sine.
+`worst spur dBc @ Hz`: the largest single bin that is not a tone, up to the
+Nyquist (aliases and truncation harmonics show here). `IMD dBc`: the 1 kHz
+difference product of the 19 + 20 kHz pair. A `cpu` line per candidate.
+
+**`--listen`.** Starts recording, then waits while you run the `fidelity js`
+snippet in a WebView console (DeetsMusic's dev app: `node
+scripts/webview-eval.mjs "<snippet>"`). The snippet builds the schedule as a
+44.1 kHz float WAV and plays it through an `<audio>` element, MusicKit's own
+path, so the `device` row includes Chromium's resample to the mix rate. The
+WebView's volume and its Windows mixer slider must be at 100 % for the level
+column to mean anything.
 
 ## Latency policy
 

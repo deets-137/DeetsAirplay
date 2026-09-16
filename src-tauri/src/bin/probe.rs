@@ -5,6 +5,9 @@
 //!   cargo run --bin probe -- tone <ip> [--port 7000] [--latency 250] [--seconds 20]
 //!   cargo run --bin probe -- capture <ip> [--latency 250] [--seconds 60]
 //!   cargo run --bin probe -- process <ip> --pid <pid> [--seconds 30] [--mute-after 10] [--dry]
+//!   cargo run --release --bin probe -- fidelity [--no-mute] [--listen SECONDS]
+//!   cargo run --bin probe -- fidelity js
+//!   cargo run --release --bin probe -- fidelity offline [--rate 48000]
 //!
 //! `tone` plays a 440 Hz sine so the audio path is proven without WASAPI in
 //! the loop; `capture` streams whatever Windows is playing; `process` streams
@@ -13,6 +16,14 @@
 //! whether the per-process tap survives the app's own mute (DeetsMusic
 //! docs/AIRPLAY.md §6). Unmutes on exit. `--dry` skips the speaker and only
 //! reports what the capture hears (frames in / frames not silent).
+//!
+//! `fidelity` needs no speaker: it plays test tones and measures what the
+//! capture's conversion does to them (engine vs linear vs sinc vs sinc +
+//! dither, against a perfect 44.1 kHz copy). Mutes the master volume for the
+//! run. `--listen N` records while a WebView plays the schedule instead
+//! (`fidelity js` prints the snippet), which measures Chromium's resample too.
+//! `fidelity offline` runs the candidates on a made-up recording, no device.
+//! docs/architecture.md § Measuring audio quality.
 
 use std::net::Ipv4Addr;
 use std::time::Duration;
@@ -21,6 +32,7 @@ use deets_airplay::airplay::alac::SAMPLE_RATE;
 use deets_airplay::airplay::session::{self, Config, Source};
 use deets_airplay::airplay::{bplist, mdns};
 use deets_airplay::capture::Capture;
+use deets_airplay::fidelity;
 use deets_airplay::mixer;
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -213,6 +225,21 @@ fn main() {
             let (_, loud) = capture.stats();
             eprintln!("{}", if loud > 0 { "SELF-TREE CAPTURE HEARS THE CHILD" } else { "self-tree capture heard NOTHING" });
         }
+        Some("fidelity") => {
+            match args.get(1).map(String::as_str) {
+                Some("js") => return println!("{}", fidelity::js_snippet()),
+                Some("offline") => return fidelity::run_offline(arg(&args, "--rate").and_then(|s| s.parse().ok()).unwrap_or(48_000)),
+                _ => {}
+            }
+            let opts = fidelity::Options {
+                mute: !args.iter().any(|a| a == "--no-mute"),
+                listen_seconds: arg(&args, "--listen").and_then(|s| s.parse().ok()),
+            };
+            if let Err(e) = fidelity::run(opts) {
+                eprintln!("FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
         Some("bplist") => {
             // Round-trip self-check of the encoder/decoder.
             let v = bplist::dict(vec![
@@ -229,7 +256,7 @@ fn main() {
             println!("bplist round-trip ok ({} bytes)", enc.len());
         }
         _ => {
-            eprintln!("usage: probe discover | tone <ip> | capture <ip> | process <ip> --pid N [--mute-after S] [--dry] | selfcapture | bplist");
+            eprintln!("usage: probe discover | tone <ip> | capture <ip> | process <ip> --pid N [--mute-after S] [--dry] | selfcapture | fidelity [--no-mute] [--listen S] | fidelity js | fidelity offline [--rate HZ] | bplist");
         }
     }
 }

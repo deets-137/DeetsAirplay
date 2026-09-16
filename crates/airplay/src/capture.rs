@@ -5,7 +5,8 @@
 //! 1. `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM` asks the audio engine to hand us
 //!    44.1k/16/2 directly, whatever the device mix format is (usually 48 kHz
 //!    float). If the engine refuses, we take the mix format and convert
-//!    (float→i16, linear resample) ourselves.
+//!    ourselves: `resample::Sinc` + TPDF dither (`probe fidelity` measured the
+//!    engine path at the 16-bit ceiling, and this one matches it).
 //! 2. A silent render stream on the same device keeps the engine running,
 //!    so loopback keeps delivering frames while nothing is playing and the
 //!    AirPlay timeline never starves on the capture side.
@@ -26,6 +27,7 @@ use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FO
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED};
 
 use crate::airplay::alac::{CHANNELS, SAMPLE_RATE};
+use crate::resample::{Quantizer, Sinc};
 
 /// How much captured audio we hold before dropping the oldest. This is the
 /// only latency the capture side adds; the pacer normally drains it to zero.
@@ -65,6 +67,11 @@ impl Ring {
             let drop = q.len() - max;
             q.drain(..drop);
         }
+    }
+    /// Move everything the ring holds onto the end of `dst`, padding nothing
+    /// (`probe fidelity` records the capture exactly as delivered).
+    pub fn drain_into(&self, dst: &mut Vec<i16>) {
+        dst.extend(self.samples.lock().unwrap().drain(..));
     }
     /// Fill `dst` from the ring, zeros for whatever is missing.
     pub fn fill(&self, dst: &mut [i16]) {
@@ -286,8 +293,8 @@ impl Drop for Capture {
 enum Convert {
     /// The engine gave us 44.1k/16/2 already.
     None,
-    /// Mix format: sample rate, channels, float or i16.
-    Manual { rate: u32, channels: usize, float: bool, phase: f64, carry: Vec<(f32, f32)> },
+    /// Mix format: channels, float or i16; resampled by `resample::Sinc`, dithered to i16.
+    Manual { channels: usize, float: bool, sinc: Sinc, quantizer: Quantizer, mid: Vec<(f32, f32)> },
 }
 
 fn pcm_44100() -> WAVEFORMATEX {
@@ -348,8 +355,8 @@ fn run(stop: Arc<AtomicBool>, ring: Arc<Ring>, init: &std::sync::mpsc::Sender<Re
                         .map_err(|e| format!("Initialize (loopback, mix format): {e}"))?;
                     let rate = f.nSamplesPerSec;
                     let channels = f.nChannels as usize;
-                    let note = format!("mix format {rate} Hz / {channels} ch / {} → converted in software", if float { "float" } else { "16-bit" });
-                    (retry, Convert::Manual { rate, channels, float, phase: 0.0, carry: Vec::new() }, note)
+                    let note = format!("mix format {rate} Hz / {channels} ch / {} → sinc + dither in software", if float { "float" } else { "16-bit" });
+                    (retry, Convert::Manual { channels, float, sinc: Sinc::new(rate, SAMPLE_RATE), quantizer: Quantizer::new(true), mid: Vec::new() }, note)
                 }
             };
         CoTaskMemFree(Some(mix as *const _));
@@ -391,11 +398,10 @@ fn run(stop: Arc<AtomicBool>, ring: Arc<Ring>, init: &std::sync::mpsc::Sender<Re
                             out.extend_from_slice(src);
                         }
                     }
-                    Convert::Manual { rate, channels, float, phase, carry } => {
+                    Convert::Manual { channels, float, sinc, quantizer, mid } => {
                         // Read stereo pairs as f32.
                         let n = frames as usize;
-                        let mut pairs: Vec<(f32, f32)> = std::mem::take(carry);
-                        pairs.reserve(n);
+                        let mut pairs: Vec<(f32, f32)> = Vec::with_capacity(n);
                         for i in 0..n {
                             if silent {
                                 pairs.push((0.0, 0.0));
@@ -410,21 +416,9 @@ fn run(stop: Arc<AtomicBool>, ring: Arc<Ring>, init: &std::sync::mpsc::Sender<Re
                             };
                             pairs.push((l, r));
                         }
-                        // Linear resample rate → 44100.
-                        let step = *rate as f64 / SAMPLE_RATE as f64;
-                        while (*phase as usize) + 1 < pairs.len() {
-                            let i0 = *phase as usize;
-                            let frac = (*phase - i0 as f64) as f32;
-                            let (a, b) = (pairs[i0], pairs[i0 + 1]);
-                            let l = a.0 + (b.0 - a.0) * frac;
-                            let r = a.1 + (b.1 - a.1) * frac;
-                            out.push((l.clamp(-1.0, 1.0) * 32767.0) as i16);
-                            out.push((r.clamp(-1.0, 1.0) * 32767.0) as i16);
-                            *phase += step;
-                        }
-                        let keep = (*phase as usize).min(pairs.len());
-                        *carry = pairs.split_off(keep);
-                        *phase -= keep as f64;
+                        mid.clear();
+                        sinc.process(&pairs, mid);
+                        quantizer.process(mid, &mut out);
                     }
                 }
                 capture_client.ReleaseBuffer(frames).ok();

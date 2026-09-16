@@ -116,6 +116,12 @@ of the base block in `skin.css`.
   (DeetsMusic's per-process path) and can mute that app in the Windows
   mixer mid-stream — the test for whether the tap survives the mute.
   `discover` lists speakers with their TXT records.
+- **Audio quality is measured, not judged by ear:** `cargo run --release --bin
+  probe -- fidelity` plays test tones with the master volume muted and prints
+  level / THD+N / spurs for the shipping capture against every `resample.rs`
+  candidate and a perfect 44.1 kHz copy. `fidelity offline` needs no device;
+  `--listen N` + `fidelity js` measure a WebView's own resample. Stops if
+  anything else is playing. docs/architecture.md § Measuring audio quality.
 - Windows Firewall: the HomePod sends unsolicited UDP to our timing and
   control ports. Windows does NOT prompt for it. The installed app asks once
   (UAC, `netsh`) on its first run; `probe.exe` and the dev
@@ -147,6 +153,7 @@ npm run tauri dev     # compiles Rust (first run slow); the app starts in the TR
 npx tsc --noEmit
 cd src-tauri && cargo check --bin probe --bin deetsairplay
 cd src-tauri && cargo run --bin probe -- discover
+cd src-tauri && cargo run --release --bin probe -- fidelity
 npm run release          # NSIS installer under src-tauri/target/release/bundle/nsis/
 ```
 

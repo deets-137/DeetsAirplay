@@ -21,17 +21,20 @@ serde = { version = "1", features = ["derive"] }
 windows-core = "0.61"                    # the `implement` macro (process-loopback completion handler)
 
 # OS bindings only: WASAPI loopback (device + per-process), the volume mixer,
-# process tree, CSPRNG, timer resolution / MMCSS.
+# process tree, CSPRNG, timer resolution / MMCSS; the master mute + console
+# Ctrl+C hook for `probe fidelity`.
 [dependencies.windows]
 version = "0.61"
 features = [
   "Win32_Foundation",
   "Win32_Media",
   "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
   "Win32_Media_KernelStreaming",
   "Win32_Media_Multimedia",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
+  "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Threading",
   "Win32_System_Variant",

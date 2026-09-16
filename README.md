@@ -67,6 +67,7 @@ cd src-tauri
 cargo run --bin probe -- discover
 cargo run --bin probe -- tone <homepod-ip>
 cargo run --bin probe -- capture <homepod-ip>
+cargo run --release --bin probe -- fidelity   # audio quality, no speaker needed
 ```
 
 `npm run release` produces an NSIS installer under
