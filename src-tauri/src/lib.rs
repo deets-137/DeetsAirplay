@@ -4,9 +4,10 @@
 //! settings store.
 
 pub mod media;
+pub mod music;
 pub mod store;
 
-use deets_airplay::{airplay, capture};
+use deets_airplay::{airplay, capture, claim};
 
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
@@ -38,6 +39,13 @@ struct Live {
 struct AppState {
     live: Mutex<Option<Live>>,
     speakers: Mutex<Vec<Speaker>>,
+    /// Does DeetsMusic hold the stream? Worked out by the once-a-second status
+    /// poll and remembered here, so a slider drag or a transport tap can route
+    /// itself without probing the bridge on every event.
+    music_owns: Mutex<bool>,
+    /// Is the card showing DeetsMusic? Then the transport buttons under it
+    /// should drive DeetsMusic itself, not tap at a media key and hope.
+    card_from_music: Mutex<bool>,
 }
 
 /// The panel hides when it loses focus; a tray click that caused that blur
@@ -51,11 +59,64 @@ struct Connected {
     capture: String,
 }
 
+/// Another app on this PC streaming to a speaker (`deets_airplay::claim`).
+/// Two senders cannot share a receiver, so the panel says who has it rather
+/// than letting a connect fail with a handshake error.
+#[derive(Serialize)]
+struct Hold {
+    app: String,
+    speaker: String,
+    /// Plain words for what that stream carries, or empty if it did not say.
+    sends: String,
+    /// It is DeetsMusic, reachable, and new enough to be asked to let go.
+    can_hand_over: bool,
+}
+
+/// Where the now-playing card and the transport buttons point.
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Source {
+    /// Windows' own media session: whatever app is playing (media.rs).
+    Windows,
+    /// DeetsMusic's bridge: artwork, position, exact transport (music.rs).
+    Music,
+}
+
+/// Who holds the AirPlay stream, which decides where the volume slider and
+/// the transport buttons point. Never guessed: a volume sent to the wrong
+/// stage would attenuate one app inside a mix instead of moving the speaker.
+#[derive(Clone, Copy, PartialEq)]
+enum Owner {
+    Us,
+    Music,
+    Nobody,
+}
+
+/// One now-playing card, whatever it came from.
+#[derive(Default, Serialize)]
+struct Card {
+    source: Option<Source>,
+    playing: bool,
+    title: String,
+    artist: String,
+    /// A station's name, when one is playing rather than a track.
+    station: String,
+    /// A live stream: the position means nothing, so the bar is hidden.
+    live: bool,
+    artwork: Option<String>,
+    position: f64,
+    duration: f64,
+}
+
 #[derive(Serialize)]
 struct Status {
     connected: Option<Connected>,
     settings: Settings,
-    media: media::NowPlaying,
+    card: Card,
+    /// Speakers other apps are holding right now.
+    holds: Vec<Hold>,
+    /// DeetsMusic, if it is running: version, whether it will take commands.
+    music: Option<music::Music>,
 }
 
 // ── latency policy ────────────────────────────────────────────────────
@@ -102,7 +163,82 @@ fn start_live(speaker: LastSpeaker, settings: &Settings, rtt_p95_ms: Option<f64>
         airplay::log(&format!("[connect] FAILED: {e}"));
         e
     })?;
+    // This app sends the default output's loopback — everything the PC plays,
+    // DeetsMusic included. Saying so in the claim is what lets DeetsMusic tell
+    // the user its song is already on the speaker rather than offering to
+    // fight us for it. A per-app picker (docs/roadmap.md) narrows this later.
+    session.describe_send(claim::Send::All);
     Ok(Live { session, capture_note: capture.format_note.clone(), _capture: capture, speaker, retuned: rtt_p95_ms.is_some() })
+}
+
+// ── the rest of the family ────────────────────────────────────────────
+
+/// What another app's stream carries, in the panel's words.
+fn sends_in_words(send: &claim::Send) -> String {
+    match send {
+        claim::Send::All => "everything this PC plays".into(),
+        claim::Send::Apps(names) if names.is_empty() => String::new(),
+        claim::Send::Apps(names) => names.iter().map(|n| n.trim_end_matches(".exe").to_string()).collect::<Vec<_>>().join(", "),
+        claim::Send::Unknown => String::new(),
+    }
+}
+
+/// Speakers held by other processes. `music` is passed in so a DeetsMusic old
+/// enough not to write a claim (its crate predates `claim.rs`) is still seen,
+/// through its own `/airplay` answer.
+fn holds(music: &Option<music::Music>) -> Vec<Hold> {
+    let can_hand_over = music.as_ref().is_some_and(|m| m.can_hand_over);
+    let mut out: Vec<Hold> = claim::others()
+        .into_iter()
+        .map(|c| Hold { can_hand_over: c.app == "DeetsMusic" && can_hand_over, sends: sends_in_words(&c.send), app: c.app, speaker: c.speaker })
+        .collect();
+    if let Some(speaker) = music.as_ref().and_then(|m| m.speaker.clone()) {
+        if !out.iter().any(|h| h.speaker.eq_ignore_ascii_case(&speaker)) {
+            out.push(Hold { app: "DeetsMusic".into(), speaker, sends: "what DeetsMusic plays".into(), can_hand_over });
+        }
+    }
+    out
+}
+
+/// Who has the stream. `Us` beats anything else: our own claim is the one we
+/// are certain about.
+fn owner(state: &AppState, holds: &[Hold]) -> Owner {
+    if state.live.lock().unwrap().is_some() {
+        return Owner::Us;
+    }
+    if holds.iter().any(|h| h.app == "DeetsMusic") {
+        return Owner::Music;
+    }
+    Owner::Nobody
+}
+
+/// The card. DeetsMusic wins when it owns the stream (it IS what the speaker
+/// is playing), and when we own a stream that carries the whole PC and
+/// DeetsMusic is the thing playing — its metadata is richer than the media
+/// session's, and it is genuinely on the speaker. Anything else, including
+/// DeetsMusic merely sitting paused while a browser plays, falls to Windows.
+fn card(owner: Owner, music: &Option<music::Music>) -> Card {
+    let np = music.as_ref().and_then(|m| m.now_playing.clone());
+    let from_music = match (&np, owner) {
+        (Some(np), Owner::Music) => np.active,
+        (Some(np), Owner::Us) => np.playing,
+        _ => false,
+    };
+    if let (true, Some(np)) = (from_music, np) {
+        return Card {
+            source: Some(Source::Music),
+            playing: np.playing,
+            title: np.title,
+            artist: np.artist,
+            station: np.station,
+            live: np.live,
+            artwork: np.artwork,
+            position: np.position,
+            duration: np.duration,
+        };
+    }
+    let now = media::now_playing();
+    Card { source: Some(Source::Windows), playing: now.playing, title: now.title, artist: now.artist, ..Card::default() }
 }
 
 fn stop_live(state: &AppState) {
@@ -114,6 +250,12 @@ fn stop_live(state: &AppState) {
 fn connect_speaker(app: &AppHandle, speaker: LastSpeaker) -> Result<(), String> {
     let state = app.state::<AppState>();
     let store = app.state::<Store>();
+    // A receiver takes one sender. Say who has it, rather than letting the
+    // handshake fail at SETUP with something the user cannot act on. The panel
+    // normally heads this off; the tray's "Connect to …" comes through here too.
+    if let Some(other) = claim::on_speaker(&speaker.name) {
+        return Err(format!("{} is already playing on {}.", other.app, speaker.name));
+    }
     stop_live(&state);
     let settings = store.settings.lock().unwrap().clone();
     let live = start_live(speaker.clone(), &settings, None)?;
@@ -232,20 +374,57 @@ async fn status(app: AppHandle) -> Result<Status, String> {
             stats: l.session.stats(),
             capture: l.capture_note.clone(),
         });
-        Ok(Status { connected, settings, media: media::now_playing() })
+
+        // Only ask DeetsMusic anything while the panel is actually open. The
+        // poll runs whether or not it is, and every request is a line in
+        // DeetsMusic's log; nobody is reading a card behind a hidden window.
+        // The claim file costs nothing and stays live either way, so the tray
+        // still refuses a speaker someone else has.
+        let visible = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false);
+        let music = if visible { music::snapshot() } else { None };
+        let holds = holds(&music);
+        let who = owner(&state, &holds);
+        *state.music_owns.lock().unwrap() = who == Owner::Music;
+        // While DeetsMusic holds the speaker, the slider it shows IS the
+        // speaker's volume (it hands its own slider over on connect), so the
+        // panel reads that number instead of our stored one — and never writes
+        // it to our settings, which describe our sessions, not its.
+        if who == Owner::Music {
+            if let Some(v) = music.as_ref().and_then(|m| m.now_playing.as_ref()).map(|np| np.volume) {
+                settings.volume = v;
+            }
+        }
+        let card = card(who, &music);
+        *state.card_from_music.lock().unwrap() = card.source == Some(Source::Music);
+        Ok(Status { connected, settings, card, holds, music })
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+/// The volume slider, pointed at whatever is making the sound — once.
+///
+/// Ours: the receiver's own gain over RTSP. DeetsMusic's: its slider, which it
+/// has already rerouted to the same receiver. What must never happen is the
+/// third thing — turning DeetsMusic down inside a mix we are capturing, which
+/// would quieten one app's share of the stream instead of the speaker.
 #[tauri::command]
-fn volume_set(pct: f64, state: State<AppState>, store: State<Store>) -> Result<(), String> {
-    store.settings.lock().unwrap().volume = pct;
-    store.save()?;
-    if let Some(l) = state.live.lock().unwrap().as_mut() {
-        l.session.set_volume(pct)?;
-    }
-    Ok(())
+async fn volume_set(app: AppHandle, pct: f64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let store = app.state::<Store>();
+        if *state.music_owns.lock().unwrap() {
+            return music::command("volume", Some((pct / 100.0).clamp(0.0, 1.0)));
+        }
+        store.settings.lock().unwrap().volume = pct;
+        store.save()?;
+        if let Some(l) = state.live.lock().unwrap().as_mut() {
+            l.session.set_volume(pct)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -264,10 +443,61 @@ async fn latency_set(app: AppHandle, latency: Latency, sync_offset_ms: u32) -> R
     .map_err(|e| e.to_string())?
 }
 
+/// The buttons under the card, pointed at whatever the card is showing.
+///
+/// DeetsMusic's bridge is exact where a media key is a guess, so it is tried
+/// first whenever the card is DeetsMusic's — but it needs Agent control turned
+/// on over there, and DeetsMusic may be mid-something, so any failure falls
+/// back to the media session rather than doing nothing.
+///
+/// Note the receiver's own commands (Siri, the HomePod's touch surface) do NOT
+/// come through here: they arrive on the event-channel thread, which must
+/// never block, and an HTTP call into another app's window can take seconds.
+/// They stay on `media::send`, which the media session answers immediately.
 #[tauri::command]
-async fn transport(kind: media::Transport) {
+async fn transport(app: AppHandle, kind: media::Transport) {
     // WinRT async calls block on .get(); keep them off the main thread.
-    tauri::async_runtime::spawn_blocking(move || media::send(kind)).await.ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        let via_music = *app.state::<AppState>().card_from_music.lock().unwrap();
+        if via_music {
+            let named = match kind {
+                media::Transport::Previous => Some("previous"),
+                media::Transport::PlayPause => Some("play-pause"),
+                media::Transport::Next => Some("next"),
+                media::Transport::Play => Some("play"),
+                media::Transport::Pause => Some("pause"),
+            };
+            if let Some(name) = named {
+                match music::command(name, None) {
+                    Ok(()) => return,
+                    Err(e) => airplay::log(&format!("[music] {name} refused ({e}); falling back to the media session")),
+                }
+            }
+        }
+        media::send(kind);
+    })
+    .await
+    .ok();
+}
+
+/// Take a speaker DeetsMusic is holding: ask it to let go, wait for its claim
+/// to clear, then connect. If DeetsMusic never lets go we say so and stay put,
+/// rather than racing it for a receiver that would drop us both.
+#[tauri::command]
+async fn speaker_take_over(app: AppHandle, speaker: LastSpeaker) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        music::hand_over()?;
+        let waited_from = Instant::now();
+        while claim::on_speaker(&speaker.name).is_some() || music::snapshot().and_then(|m| m.speaker).is_some_and(|s| s.eq_ignore_ascii_case(&speaker.name)) {
+            if waited_from.elapsed() > Duration::from_secs(6) {
+                return Err(format!("DeetsMusic is still on {}.", speaker.name));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        connect_speaker(&app, speaker)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── launch at startup (HKCU Run key, via reg.exe; no crate needed) ──────
@@ -420,7 +650,7 @@ fn rebuild_tray_menu(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .manage(HiddenAt(Mutex::new(None)))
-        .manage(AppState { live: Mutex::new(None), speakers: Mutex::new(Vec::new()) })
+        .manage(AppState { live: Mutex::new(None), speakers: Mutex::new(Vec::new()), music_owns: Mutex::new(false), card_from_music: Mutex::new(false) })
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             airplay::log_to_file(&dir.join("deetsairplay.log"));
@@ -505,6 +735,7 @@ pub fn run() {
             speakers_scan,
             speakers_cached,
             speaker_connect,
+            speaker_take_over,
             speaker_disconnect,
             status,
             volume_set,

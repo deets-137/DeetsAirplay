@@ -34,6 +34,16 @@ Discord-bot project).
 - **Never block a Tauri command on the network or on WinRT from the main
   thread.** Scan, connect, disconnect, status and transport are `async` and
   run in `spawn_blocking`; a synchronous command freezes the panel.
+- **Never move DeetsMusic's own volume from here while we are capturing it.**
+  The loopback is taken *after* every app's mixer volume, so turning
+  DeetsMusic down would quieten its share of a mix we are already sending
+  instead of moving the speaker. The slider moves the thing making the sound
+  exactly once: the receiver's gain over RTSP when we hold the stream,
+  DeetsMusic's slider (already rerouted to the same receiver) when it does.
+- **Never route the receiver's own transport commands through DeetsMusic's
+  bridge.** They arrive on the event-channel thread, which must not block,
+  and `POST /command` goes through DeetsMusic's window. Those stay on
+  `media::send`; only the panel's buttons take the precise path.
 - **Never use media keys as the first choice for transport.** A key press
   routes through the foreground window, and when the panel is focused that
   is our own WebView, which swallows it. `media.rs` drives the Windows media
@@ -51,6 +61,16 @@ Discord-bot project).
 - **Never rename a theme id without a `RETIRED` entry.** `deets.theme` is
   shared across the family; a rename lands in `src/theme.ts`, the pre-paint
   script in `index.html`, *and* the sibling repos.
+
+## Sharing the PC with DeetsMusic
+
+Both apps send through the same crate and a receiver takes one sender, so
+`crates/airplay/src/claim.rs` records who holds which speaker (and what the
+stream carries) in `%LOCALAPPDATA%\Deets\airplay-claims.tsv`, and
+`src-tauri/src/music.rs` talks to DeetsMusic's loopback bridge for the
+now-playing card, the precise transport, and the hand-over. DeetsMusic adopts
+the claim by bumping its crate `rev`; its one new route (`GET`/`POST /airplay`)
+is inert when nothing else is installed. See `docs/architecture.md`.
 
 ## Ported code
 

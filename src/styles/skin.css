@@ -127,6 +127,9 @@
   --transport-main: 40px;           /* play / pause glyph box */
   --transport-gap:  var(--space-4);
   --dur-reorder:    0.38s;          /* a card sliding to a new slot */
+  --np-art:         42px;           /* cover art, when DeetsMusic supplies one */
+  --np-bar-h:       3px;            /* the position bar under the title */
+  --held-row-h:     44px;           /* a speaker row grown by a "held by" line */
 }
 
 /* ============================================================

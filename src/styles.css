@@ -258,6 +258,19 @@ body {
 }
 .speaker__model { font-size: var(--fs-subtext); color: var(--subtext); white-space: nowrap; }
 .speaker.is-unreachable { opacity: 0.55; }
+/* Held by the other app on this PC: the row says who has it and offers to
+   take it, rather than letting a connect fail at the handshake. */
+.speaker.is-held { height: var(--held-row-h); cursor: default; }
+.speaker.is-held:hover { transform: none; box-shadow: none; }
+.speaker.is-held .speaker__dot { background: var(--ink-2); }
+.speaker__lines { display: flex; flex-direction: column; min-width: 0; }
+.speaker__held {
+  font-size: var(--fs-subtext);
+  color: var(--subtext);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .speaker--empty {
   display: block;
   height: auto;
@@ -352,6 +365,27 @@ body {
 .transport__btn--main[data-playing="true"] .glyph-pause { display: block; }
 
 /* now playing: title over artist, each one line */
+/* The card grows a cover and a position bar only when DeetsMusic is the
+   source; the media session has neither, and the row collapses back. */
+.np-row { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.np__art {
+  width: var(--np-art);
+  height: var(--np-art);
+  flex: 0 0 auto;
+  object-fit: cover;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+}
+.np__from { font-size: var(--fs-subtext); color: var(--subtext); opacity: 0.8; }
+.np-bar {
+  height: var(--np-bar-h);
+  margin-top: var(--space-2);
+  border-radius: var(--scrollbar-radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.np-bar__fill { display: block; height: 100%; width: 0; background: var(--title); transition: width var(--dur-med) linear; }
 .np { display: flex; flex-direction: column; min-width: 0; }
 .np__title { font-family: var(--font-title); font-size: var(--fs-text); color: var(--title); text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np__artist { font-size: var(--fs-subtext); color: var(--subtext); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: calc(var(--fs-subtext) * var(--lh-text)); }

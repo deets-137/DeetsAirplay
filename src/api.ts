@@ -46,16 +46,44 @@ export interface Connected {
   capture: string;
 }
 
-export interface NowPlaying {
+// One now-playing card, from the Windows media session or from DeetsMusic
+// (which knows the cover and the position). Rust picks the source.
+export interface Card {
+  source: "windows" | "music" | null;
   playing: boolean;
   title: string;
   artist: string;
+  station: string;
+  live: boolean;
+  artwork: string | null;
+  position: number;
+  duration: number;
+}
+
+// Another app on this PC streaming to a speaker. A receiver takes one
+// sender, so a held speaker is offered as a hand-over, never as a connect.
+export interface Hold {
+  app: string;
+  speaker: string;
+  sends: string;
+  can_hand_over: boolean;
+}
+
+export interface Music {
+  version: string;
+  // Agent control is on over there, so it will take our commands.
+  agent: boolean;
+  can_hand_over: boolean;
+  speaker: string | null;
+  now_playing: unknown;
 }
 
 export interface Status {
   connected: Connected | null;
   settings: Settings;
-  media: NowPlaying;
+  card: Card;
+  holds: Hold[];
+  music: Music | null;
 }
 
 export type Transport = "previous" | "play_pause" | "next";
@@ -63,6 +91,7 @@ export type Transport = "previous" | "play_pause" | "next";
 export const speakersScan = () => invoke<Speaker[]>("speakers_scan");
 export const speakersCached = () => invoke<Speaker[]>("speakers_cached");
 export const speakerConnect = (speaker: LastSpeaker) => invoke<void>("speaker_connect", { speaker });
+export const speakerTakeOver = (speaker: LastSpeaker) => invoke<void>("speaker_take_over", { speaker });
 export const speakerDisconnect = () => invoke<void>("speaker_disconnect");
 export const status = () => invoke<Status>("status");
 export const volumeSet = (pct: number) => invoke<void>("volume_set", { pct });

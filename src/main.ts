@@ -8,11 +8,13 @@ import {
   panelHide,
   speakerConnect,
   speakerDisconnect,
+  speakerTakeOver,
   speakersCached,
   speakersScan,
   status,
   transport,
   volumeSet,
+  type Hold,
   type LastSpeaker,
   type Latency,
   type Speaker,
@@ -50,8 +52,12 @@ window.addEventListener("DOMContentLoaded", () => {
   let speakers: Speaker[] = [];
   let selected: LastSpeaker | null = null;
   let connectedName: string | null = null;
+  // Speakers the other app on this PC is streaming to. One receiver, one
+  // sender: a held row offers a hand-over instead of a connect.
+  let holds: Hold[] = [];
 
   const toLast = (s: Speaker): LastSpeaker | null => (s.ip ? { name: s.name, ip: s.ip, port: s.port } : null);
+  const heldBy = (name: string) => holds.find((h) => h.speaker.toLowerCase() === name.toLowerCase());
 
   const renderSpeakers = () => {
     if (speakers.length === 0) {
@@ -68,15 +74,37 @@ window.addEventListener("DOMContentLoaded", () => {
         li.setAttribute("role", "option");
         const isSel = selected?.name === s.name;
         const isLive = connectedName === s.name;
+        const held = heldBy(s.name);
         li.setAttribute("aria-selected", String(isSel));
         li.classList.toggle("is-live", isLive);
+        li.classList.toggle("is-held", !!held);
         if (!s.ip) li.classList.add("is-unreachable");
-        li.innerHTML = `<span class="speaker__dot" aria-hidden="true"></span><span class="speaker__name"></span><span class="speaker__model"></span>`;
+        li.innerHTML = `<span class="speaker__dot" aria-hidden="true"></span><span class="speaker__lines"><span class="speaker__name"></span><span class="speaker__held"></span></span><span class="speaker__model"></span>`;
         li.querySelector(".speaker__name")!.textContent = s.name;
-        li.querySelector(".speaker__model")!.textContent = s.ip ? s.model || "AirPlay" : "no address";
+        li.querySelector(".speaker__held")!.textContent = held ? `Playing from ${held.app}${held.sends ? ` · ${held.sends}` : ""}` : "";
+        const tail = li.querySelector(".speaker__model")!;
+        if (held?.can_hand_over) {
+          // The hand-over: ask the holder to let go, then take the speaker.
+          const take = document.createElement("button");
+          take.type = "button";
+          take.className = "btn btn--quiet btn--small";
+          take.textContent = "Take over";
+          take.addEventListener("click", (e) => {
+            e.stopPropagation();
+            selected = toLast(s);
+            void takeOver(held.app);
+          });
+          tail.replaceWith(take);
+        } else {
+          tail.textContent = s.ip ? s.model || "AirPlay" : "no address";
+        }
         li.title = s.ip ? `${s.ip}:${s.port}` : "mDNS answered without an A record";
         li.addEventListener("click", () => {
           if (busy || connectedName === s.name) return;
+          if (held) {
+            notify(held.can_hand_over ? `${held.app} has ${s.name}. Use Take over.` : `${held.app} has ${s.name}. Disconnect it there first.`, true);
+            return;
+          }
           selected = toLast(s);
           renderSpeakers();
           void connect();
@@ -153,6 +181,28 @@ window.addEventListener("DOMContentLoaded", () => {
       void refresh();
     }
   };
+  // Ask the holder to let the speaker go, then take it. The wait lives in
+  // Rust (it watches the claim clear), so this is one call.
+  const takeOver = async (from: string) => {
+    const target = selected ?? lastSpeaker;
+    if (!target || busy) return;
+    setBusy(true);
+    setStatus("probing", `Taking ${target.name}…`);
+    connName.textContent = target.name;
+    connLine.textContent = `Asking ${from} to let go…`;
+    try {
+      await speakerTakeOver(target);
+      notify(`Streaming to ${target.name}`);
+    } catch (e) {
+      setStatus("missing", "Failed");
+      connLine.textContent = String(e);
+      notify(String(e), true);
+    } finally {
+      setBusy(false);
+      void refresh();
+    }
+  };
+
   const disconnect = async () => {
     setBusy(true);
     try {
@@ -209,6 +259,10 @@ window.addEventListener("DOMContentLoaded", () => {
   const playPause = $<HTMLButtonElement>("play-pause");
   const npTitle = $<HTMLElement>("np-title");
   const npArtist = $<HTMLElement>("np-artist");
+  const npFrom = $<HTMLElement>("np-from");
+  const npArt = $<HTMLImageElement>("np-art");
+  const npBar = $<HTMLElement>("np-bar");
+  const npBarFill = $<HTMLElement>("np-bar-fill");
   document.querySelectorAll<HTMLButtonElement>("[data-transport]").forEach((b) => {
     b.addEventListener("click", () => {
       if (b === playPause) playPause.dataset.playing = String(playPause.dataset.playing !== "true"); // optimistic; the poll corrects it
@@ -292,9 +346,49 @@ window.addEventListener("DOMContentLoaded", () => {
       transportOnTop = !!c;
       moveCard($("transport"), transportOnTop);
     }
-    playPause.dataset.playing = String(s.media.playing);
-    npTitle.textContent = s.media.title || (s.media.playing ? "Playing" : "Nothing playing");
-    npArtist.textContent = s.media.artist;
+    // The card: the Windows media session, or DeetsMusic when it is the thing
+    // playing — which is the only source that has a cover and a position.
+    const card = s.card;
+    playPause.dataset.playing = String(card.playing);
+    npTitle.textContent = card.station || card.title || (card.playing ? "Playing" : "Nothing playing");
+    npArtist.textContent = card.station && card.title ? `${card.title}${card.artist ? ` · ${card.artist}` : ""}` : card.artist;
+    const fromMusic = card.source === "music";
+    npFrom.hidden = !fromMusic;
+    // Worth saying: it explains where the cover came from, and why these
+    // buttons are exact rather than a media-key tap.
+    npFrom.textContent = fromMusic ? "from DeetsMusic" : "";
+    if (card.artwork && npArt.dataset.src !== card.artwork) {
+      npArt.dataset.src = card.artwork;
+      npArt.src = card.artwork;
+    }
+    if (!card.artwork) {
+      npArt.removeAttribute("src");
+      delete npArt.dataset.src;
+    }
+    npArt.hidden = !card.artwork;
+    const showBar = fromMusic && !card.live && card.duration > 0;
+    npBar.hidden = !showBar;
+    if (showBar) npBarFill.style.width = `${Math.min(100, (card.position / card.duration) * 100)}%`;
+
+    // Whoever else is streaming: the speaker rows say so, and so does the
+    // connection card when we are idle because someone has our last speaker.
+    const heldChanged = JSON.stringify(holds) !== JSON.stringify(s.holds);
+    holds = s.holds;
+    if (heldChanged) renderSpeakers();
+    if (!c && !busy && lastSpeaker) {
+      const held = heldBy(lastSpeaker.name);
+      if (held) {
+        connName.textContent = lastSpeaker.name;
+        connLine.textContent = `${held.app} is playing on it${held.sends ? ` — ${held.sends}` : ""}.`;
+      }
+    }
+    if (s.music && !s.music.agent && fromMusic) {
+      // The buttons still work through the media session; only the precise
+      // path is closed. Say it once, in the tooltip, not as an error.
+      playPause.title = "DeetsMusic › Settings › Connections › Agent control is off, so these use the Windows media session.";
+    } else {
+      playPause.removeAttribute("title");
+    }
   };
   const refresh = async () => {
     try {

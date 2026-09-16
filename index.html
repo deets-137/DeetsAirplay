@@ -93,10 +93,21 @@
         </div>
       </section>
 
-      <!-- Transport: media keys to whatever is playing on the PC; the volume
-           slider sets the speaker's own volume over RTSP. -->
+      <!-- Transport: the Windows media session for whatever is playing on the
+           PC, or DeetsMusic itself when it is the thing playing (music.rs) —
+           which is where the cover and the position bar come from. The volume
+           slider sets the speaker's own volume over RTSP, unless DeetsMusic
+           holds the stream, in which case it moves its slider instead. -->
       <section class="panel transport" id="transport">
-        <p class="np" id="np"><span class="np__title" id="np-title">Nothing playing</span><span class="np__artist" id="np-artist"></span></p>
+        <div class="np-row">
+          <img class="np__art" id="np-art" alt="" hidden />
+          <p class="np" id="np">
+            <span class="np__title" id="np-title">Nothing playing</span>
+            <span class="np__artist" id="np-artist"></span>
+            <span class="np__from" id="np-from" hidden></span>
+          </p>
+        </div>
+        <div class="np-bar" id="np-bar" hidden><span class="np-bar__fill" id="np-bar-fill"></span></div>
         <div class="transport__row" role="group" aria-label="Transport">
           <button class="transport__btn" type="button" data-transport="previous" aria-label="Previous track">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM18 5v14L9 12z" /></svg>
