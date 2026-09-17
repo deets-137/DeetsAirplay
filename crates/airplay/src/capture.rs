@@ -33,8 +33,14 @@ use crate::resample::{Quantizer, Sinc};
 /// only latency the capture side adds; the pacer normally drains it to zero.
 const RING_MAX_FRAMES: usize = 4410; // 100 ms
 
+/// The buffer between a source and the pacer: interleaved stereo i16 at 44.1 kHz.
+/// A WASAPI capture fills it from its own thread; an external source (DeetsMusic's
+/// in-page tap, AIRPLAY.md §12) fills it through [`Ring::push`] from wherever the
+/// frames arrive. Either way the pacer drains it with [`Ring::fill`], zeros when empty.
 pub struct Ring {
     samples: Mutex<VecDeque<i16>>,
+    /// Frames kept before the oldest are dropped.
+    max_frames: usize,
     /// Frames the source delivered, and how many of those were not silence —
     /// the probe's evidence that a capture actually hears something.
     frames_in: AtomicU64,
@@ -45,15 +51,27 @@ pub struct Ring {
 }
 
 impl Ring {
-    fn new() -> Self {
+    /// The capture's own size: 100 ms, drained to nothing by the pacer.
+    pub fn new() -> Self {
+        Self::with_capacity(RING_MAX_FRAMES)
+    }
+    /// A ring that keeps up to `max_frames` frames (an external source that arrives in
+    /// bursts wants more than 100 ms, so a late burst costs nothing).
+    pub fn with_capacity(max_frames: usize) -> Self {
         Self {
-            samples: Mutex::new(VecDeque::with_capacity(RING_MAX_FRAMES * CHANNELS * 2)),
+            samples: Mutex::new(VecDeque::with_capacity(max_frames * CHANNELS * 2)),
+            max_frames,
             frames_in: AtomicU64::new(0),
             frames_loud: AtomicU64::new(0),
             peak: AtomicU64::new(0),
         }
     }
-    fn push(&self, s: &[i16]) {
+    /// Frames waiting for the pacer.
+    pub fn queued_frames(&self) -> usize {
+        self.samples.lock().unwrap().len() / CHANNELS
+    }
+    /// Add interleaved stereo i16 frames; the oldest go once the ring is full.
+    pub fn push(&self, s: &[i16]) {
         self.frames_in.fetch_add((s.len() / CHANNELS) as u64, Ordering::Relaxed);
         if s.iter().any(|&v| v != 0) {
             self.frames_loud.fetch_add((s.len() / CHANNELS) as u64, Ordering::Relaxed);
@@ -62,7 +80,7 @@ impl Ring {
         }
         let mut q = self.samples.lock().unwrap();
         q.extend(s);
-        let max = RING_MAX_FRAMES * CHANNELS;
+        let max = self.max_frames * CHANNELS;
         if q.len() > max {
             let drop = q.len() - max;
             q.drain(..drop);
@@ -89,9 +107,20 @@ pub struct Capture {
     thread: Option<JoinHandle<()>>,
     pub ring: Arc<Ring>,
     pub format_note: String,
+    /// An external source's start-up hold: the pacer sends silence until this many
+    /// frames are queued, once per session. 0 for a WASAPI capture.
+    prefill_frames: usize,
 }
 
 impl Capture {
+    /// A capture whose frames somebody else pushes into `ring` (no thread here). The
+    /// pacer pads silence until `prefill_frames` are queued, then drains as usual, so a
+    /// source that arrives in bursts from a busy thread never underruns at the start.
+    /// DeetsMusic's in-page tap (AIRPLAY.md §12) is the one user.
+    pub fn from_ring(ring: Arc<Ring>, prefill_frames: usize, format_note: &str) -> Self {
+        Self { stop: Arc::new(AtomicBool::new(false)), thread: None, ring, format_note: format_note.to_string(), prefill_frames }
+    }
+
     pub fn start() -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let ring = Arc::new(Ring::new());
@@ -107,7 +136,7 @@ impl Capture {
             })
             .map_err(|e| e.to_string())?;
         let format_note = init_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "capture thread did not start".to_string())??;
-        Ok(Self { stop, thread: Some(thread), ring, format_note })
+        Ok(Self { stop, thread: Some(thread), ring, format_note, prefill_frames: 0 })
     }
 
     /// Per-process loopback: only what `pid` and its child processes play
@@ -131,7 +160,7 @@ impl Capture {
             })
             .map_err(|e| e.to_string())?;
         let format_note = init_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "capture thread did not start".to_string())??;
-        Ok(Self { stop, thread: Some(thread), ring, format_note })
+        Ok(Self { stop, thread: Some(thread), ring, format_note, prefill_frames: 0 })
     }
 
     /// (frames delivered, frames that were not silence) since start.
@@ -144,10 +173,22 @@ impl Capture {
         self.ring.peak.swap(0, Ordering::Relaxed)
     }
 
-    /// A pacer source that drains this capture.
+    /// A pacer source that drains this capture. With a prefill, it hands out silence
+    /// until the ring holds that much, once; the RTP timeline never stalls either way.
     pub fn source(&self) -> crate::airplay::session::Source {
         let ring = self.ring.clone();
-        Box::new(move |dst: &mut [i16]| ring.fill(dst))
+        let prefill = self.prefill_frames;
+        let mut primed = prefill == 0;
+        Box::new(move |dst: &mut [i16]| {
+            if !primed {
+                if ring.queued_frames() < prefill {
+                    dst.iter_mut().for_each(|s| *s = 0);
+                    return;
+                }
+                primed = true;
+            }
+            ring.fill(dst)
+        })
     }
 }
 

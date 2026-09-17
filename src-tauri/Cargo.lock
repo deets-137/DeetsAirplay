@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "deets-airplay"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chacha20poly1305",
  "num-bigint",
