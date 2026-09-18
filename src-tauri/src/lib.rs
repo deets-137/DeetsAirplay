@@ -46,6 +46,9 @@ struct AppState {
     /// Is the card showing DeetsMusic? Then the transport buttons under it
     /// should drive DeetsMusic itself, not tap at a media key and hope.
     card_from_music: Mutex<bool>,
+    /// The last card we actually drew. A hidden panel is served this instead
+    /// of paying for a fresh one; see `status`.
+    last_card: Mutex<Card>,
 }
 
 /// The panel hides when it loses focus; a tray click that caused that blur
@@ -93,7 +96,7 @@ enum Owner {
 }
 
 /// One now-playing card, whatever it came from.
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 struct Card {
     source: Option<Source>,
     playing: bool,
@@ -315,59 +318,89 @@ async fn speaker_disconnect(app: AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// Everything a live session needs done on a clock: a receiver that went
+/// away, the one-time auto-latency retune, and a volume the user moved with
+/// Siri. None of it belongs to the panel — it used to ride the panel's 1 Hz
+/// poll, which meant it ran forever whether or not a window was open and
+/// stopped mattering the moment we let that poll rest. `spawn_housekeeper`
+/// runs it, and only while there is a session.
+fn housekeep(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let store = app.state::<Store>();
+    let settings = store.settings.lock().unwrap().clone();
+
+    // Drop a session whose threads died (receiver went away).
+    let dead = state.live.lock().unwrap().as_ref().map(|l| !l.session.alive()).unwrap_or(false);
+    if dead {
+        stop_live(&state);
+        rebuild_tray_menu(app);
+        return;
+    }
+
+    // Auto mode: after 10 s of round trips, settle the buffer once.
+    let retune = {
+        let live = state.live.lock().unwrap();
+        match live.as_ref() {
+            Some(l) if !l.retuned && settings.latency == Latency::Auto => {
+                let st = l.session.stats();
+                if st.seconds >= 10 && st.rtt_p95_ms > 0.0 {
+                    let target = latency_frames(&settings, Some(st.rtt_p95_ms));
+                    let current = l.session.config.latency_frames;
+                    let diff_ms = (target as i64 - current as i64).unsigned_abs() as u32 * 1000 / SAMPLE_RATE;
+                    if diff_ms >= 100 { Some(st.rtt_p95_ms) } else { None }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    };
+    if let Some(rtt) = retune {
+        if let Err(e) = reconnect(app, Some(rtt)) {
+            airplay::log(&format!("[retune] {e}"));
+        }
+        return;
+    }
+    if let Some(l) = state.live.lock().unwrap().as_mut() {
+        // Inside the 100 ms band: call it tuned so we never flap.
+        if !l.retuned && l.session.stats().seconds >= 10 && l.session.stats().rtt_p95_ms > 0.0 {
+            l.retuned = true;
+        }
+    }
+
+    // AirPlay volume is the receiver's own gain, not a second one stacked
+    // on ours, so what session.rs polls back IS what the user is hearing.
+    // A Siri volume change produces no traffic at all, which makes the
+    // poll the only way the slider stays honest.
+    let heard = state.live.lock().unwrap().as_ref().and_then(|l| l.session.receiver_volume_pct());
+    if let Some(pct) = heard {
+        if (pct - settings.volume).abs() >= 1.0 {
+            store.settings.lock().unwrap().volume = pct;
+            if let Err(e) = store.save() {
+                airplay::log(&format!("[volume] {e}"));
+            }
+        }
+    }
+}
+
+/// The housekeeping clock. Idle, it is a mutex read every 5 s; with a session
+/// up it runs at the 1 Hz the retune and the volume sync were written for.
+fn spawn_housekeeper(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        let live = app.state::<AppState>().live.lock().unwrap().is_some();
+        if live {
+            housekeep(&app);
+        }
+        std::thread::sleep(if live { Duration::from_secs(1) } else { Duration::from_secs(5) });
+    });
+}
+
 #[tauri::command]
 async fn status(app: AppHandle) -> Result<Status, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let store = app.state::<Store>();
         let mut settings = store.settings.lock().unwrap().clone();
-
-        // Drop a session whose threads died (receiver went away).
-        let dead = state.live.lock().unwrap().as_ref().map(|l| !l.session.alive()).unwrap_or(false);
-        if dead {
-            stop_live(&state);
-            rebuild_tray_menu(&app);
-        }
-
-        // Auto mode: after 10 s of round trips, settle the buffer once.
-        let retune = {
-            let live = state.live.lock().unwrap();
-            match live.as_ref() {
-                Some(l) if !l.retuned && settings.latency == Latency::Auto => {
-                    let st = l.session.stats();
-                    if st.seconds >= 10 && st.rtt_p95_ms > 0.0 {
-                        let target = latency_frames(&settings, Some(st.rtt_p95_ms));
-                        let current = l.session.config.latency_frames;
-                        let diff_ms = (target as i64 - current as i64).unsigned_abs() as u32 * 1000 / SAMPLE_RATE;
-                        if diff_ms >= 100 { Some(st.rtt_p95_ms) } else { None }
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }
-        };
-        if let Some(rtt) = retune {
-            reconnect(&app, Some(rtt))?;
-        } else if let Some(l) = state.live.lock().unwrap().as_mut() {
-            // Inside the 100 ms band: call it tuned so we never flap.
-            if !l.retuned && l.session.stats().seconds >= 10 && l.session.stats().rtt_p95_ms > 0.0 {
-                l.retuned = true;
-            }
-        }
-
-        // AirPlay volume is the receiver's own gain, not a second one stacked
-        // on ours, so what session.rs polls back IS what the user is hearing.
-        // A Siri volume change produces no traffic at all, which makes the
-        // poll the only way the slider stays honest.
-        let heard = state.live.lock().unwrap().as_ref().and_then(|l| l.session.receiver_volume_pct());
-        if let Some(pct) = heard {
-            if (pct - settings.volume).abs() >= 1.0 {
-                settings.volume = pct;
-                store.settings.lock().unwrap().volume = pct;
-                store.save()?;
-            }
-        }
 
         let connected = state.live.lock().unwrap().as_ref().map(|l| Connected {
             speaker: l.speaker.clone(),
@@ -394,8 +427,22 @@ async fn status(app: AppHandle) -> Result<Status, String> {
                 settings.volume = v;
             }
         }
-        let card = card(who, &music);
-        *state.card_from_music.lock().unwrap() = card.source == Some(Source::Music);
+        // The card is the expensive half of a poll: `media::now_playing` builds
+        // a fresh Windows media-session manager and then calls across into
+        // whatever app is playing for its metadata. That is worth paying for a
+        // window someone is looking at and nothing at all behind a hidden one,
+        // which is why the heartbeat below can stay cheap. Hidden, the panel
+        // gets the last card we drew — what it would show for the frame between
+        // `show` and the refresh that follows it anyway — and
+        // `card_from_music` keeps the answer it had when we could still see.
+        let card = if visible {
+            let card = card(who, &music);
+            *state.card_from_music.lock().unwrap() = card.source == Some(Source::Music);
+            *state.last_card.lock().unwrap() = card.clone();
+            card
+        } else {
+            state.last_card.lock().unwrap().clone()
+        };
         Ok(Status { connected, settings, card, holds, music })
     })
     .await
@@ -650,7 +697,13 @@ fn rebuild_tray_menu(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .manage(HiddenAt(Mutex::new(None)))
-        .manage(AppState { live: Mutex::new(None), speakers: Mutex::new(Vec::new()), music_owns: Mutex::new(false), card_from_music: Mutex::new(false) })
+        .manage(AppState {
+            live: Mutex::new(None),
+            speakers: Mutex::new(Vec::new()),
+            music_owns: Mutex::new(false),
+            card_from_music: Mutex::new(false),
+            last_card: Mutex::new(Card::default()),
+        })
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("app data dir");
             airplay::log_to_file(&dir.join("deetsairplay.log"));
@@ -715,6 +768,7 @@ pub fn run() {
                 })
                 .build(app)?;
             rebuild_tray_menu(app.handle());
+            spawn_housekeeper(app.handle().clone());
 
             #[cfg(debug_assertions)]
             if let Some(win) = app.get_webview_window("main") {

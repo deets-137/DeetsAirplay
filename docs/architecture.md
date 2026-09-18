@@ -65,10 +65,10 @@ too old to write a claim, and its 404 is how we know not to offer a hand-over)
 The card needs only the token; anything that *drives* DeetsMusic also needs
 Agent control on over there, and the panel says so instead of failing quietly.
 
-The bridge is only asked while the panel is open (the status poll runs either
-way, and nobody reads a card behind a hidden window), `/health` is cached for
-30 s, and DeetsMusic no longer logs these polled GETs — two apps at one
-request a second would otherwise be all its log ring contained.
+The bridge is only asked while the panel is open (nobody reads a card behind a
+hidden window), `/health` is cached for 30 s, and DeetsMusic no longer logs
+these polled GETs — two apps at one request a second would otherwise be all
+its log ring contained.
 
 Two routing rules, both in `lib.rs`:
 
@@ -157,11 +157,38 @@ timeline). Floor 250 ms (protocol), ceiling 2 s.
 
 Changing any of them reconnects.
 
+## Two clocks (2026-09-17)
+
+An app that lives in the tray is hidden almost all of the time, so nothing may
+cost a steady tick just because the process is running.
+
+**The session's clock** is `spawn_housekeeper` in `lib.rs`: a thread that
+reaps a session whose receiver went away, does the one-time auto-latency
+retune, and writes back a volume moved by Siri. It runs at 1 Hz *while a
+session is live* and otherwise sleeps 5 s between one mutex read and the next.
+All three used to ride the panel's poll, which tied session correctness to a
+window being open.
+
+**The panel's clock** is the `status` poll in `main.ts`: 1 s while the panel is
+visible, 10 s while it is hidden, paced from `appWindow.isVisible()` on every
+focus change (blur is not hidden — a release build hides on blur, a dev build
+does not). A hidden tick reads the claim file and little else.
+
+What made this worth doing: `card()` called `media::now_playing()` on every
+tick, and that is not a cheap read. It builds a whole
+`GlobalSystemMediaTransportControlsSessionManager` — an object meant to be
+kept and subscribed to, not made and dropped — and then
+`TryGetMediaPropertiesAsync` calls *across into the app that is playing* for
+its title and artist. Once a second, from launch, forever, whether or not a
+window was open: percent-level CPU here and a share of it charged to Chrome,
+Spotify or DeetsMusic. It is now behind the same visibility gate the bridge
+already had, and a hidden panel is served `AppState::last_card` instead.
+
 ## Front-end (`src/`)
 
 | File | Owns |
 |---|---|
-| `main.ts` | Boot, the three cards, the 1 s status poll, scan-on-focus, settings menu. |
+| `main.ts` | Boot, the three cards, the status poll, scan-on-focus, settings menu. |
 | `api.ts` | Typed `invoke` wrappers; the only file that names a command. |
 | `theme.ts` | Copied from DeetsMusic; shared `deets.theme` key. |
 | `styles.css` | Chrome (DeetsMusic → DeetsRGB lineage) + the cards. Tokens only. |

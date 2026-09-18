@@ -397,14 +397,29 @@ window.addEventListener("DOMContentLoaded", () => {
       console.warn("[status]", e);
     }
   };
+  // A tray app spends nearly all its life hidden, and the poll used to run at
+  // 1 Hz from launch regardless. The session's own housekeeping has moved to
+  // the Rust side, so a hidden tick has nothing left to be prompt about: it
+  // only keeps the claim list and DeetsMusic's ownership from going stale
+  // between shows, which a slow beat does just as well.
+  const FAST_MS = 1000;
+  const SLOW_MS = 10000;
   let poll = 0;
-  const startPolling = () => {
+  let pollEvery = 0;
+  const startPolling = (every: number) => {
+    if (poll && pollEvery === every) return;
     window.clearInterval(poll);
-    poll = window.setInterval(() => void refresh(), 1000);
+    pollEvery = every;
+    poll = window.setInterval(() => void refresh(), every);
+  };
+  // Blur is not the same as hidden — a release build hides the panel when it
+  // loses focus, a dev build leaves it up — so ask the window itself.
+  const pacePolling = async () => {
+    startPolling((await appWindow.isVisible().catch(() => false)) ? FAST_MS : SLOW_MS);
   };
 
   // ── chrome ──
-  $("tl-close").addEventListener("click", () => void panelHide());
+  $("tl-close").addEventListener("click", () => void panelHide().then(pacePolling));
   $("quit").addEventListener("click", () => void appQuit());
 
   const autostartToggle = $("autostart-toggle");
@@ -436,7 +451,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (!menu.hidden) closeMenu();
-      else void panelHide();
+      else void panelHide().then(pacePolling);
     }
   });
   document.querySelectorAll<HTMLElement>("[data-theme-choice]").forEach((el) => {
@@ -452,12 +467,13 @@ window.addEventListener("DOMContentLoaded", () => {
       void refresh();
       void scan();
     }
+    void pacePolling();
   });
 
   void speakersCached().then((s) => {
     speakers = s;
     renderSpeakers();
   });
-  void refresh().then(startPolling);
+  void refresh().then(pacePolling);
   void scan();
 });
